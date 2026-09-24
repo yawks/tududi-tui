@@ -207,7 +207,7 @@ func TestTaskHeadingCountsCombinedFilters(t *testing.T) {
 	}
 }
 
-func TestMarkdownDetailDoesNotChangeContentHeight(t *testing.T) {
+func TestTaskDetailIsAFullHeightRightPanel(t *testing.T) {
 	m := model{
 		page:   pageUnplanned,
 		width:  160,
@@ -217,21 +217,20 @@ func TestMarkdownDetailDoesNotChangeContentHeight(t *testing.T) {
 			{Name: "markdown", Note: strings.Repeat("## Heading\n\nParagraph\n\n", 20)},
 		},
 	}
+	m.focusSide = false
 	m.cursor = 0
-	shortHeight := lipgloss.Height(m.contentView(130))
-	lines := strings.Split(ansi.Strip(m.contentView(130)), "\n")
-	if bottom := lines[len(lines)-1]; !strings.Contains(bottom, "╰") || !strings.Contains(bottom, "╯") {
-		t.Fatalf("task detail bottom border is not closed: %q", bottom)
-	}
+	shortHeight := lipgloss.Height(m.View())
 	m.cursor = 1
-	markdownHeight := lipgloss.Height(m.contentView(130))
+	markdownHeight := lipgloss.Height(m.View())
 	if shortHeight != markdownHeight {
-		t.Fatalf("content height changed from %d to %d", shortHeight, markdownHeight)
+		t.Fatalf("view height changed from %d to %d", shortHeight, markdownHeight)
 	}
-	if got := lipgloss.Height(m.View()); got > m.height {
-		sidebar := panel.Width(22).Height(m.height - 3).Render(m.sidebarView())
-		content := panel.Width(133).Height(m.height - 3).Render(m.contentView(131))
-		t.Fatalf("view height = %d, content view = %dx%d, content panel = %dx%d, sidebar = %d, terminal = %d", got, lipgloss.Width(m.contentView(130)), lipgloss.Height(m.contentView(130)), lipgloss.Width(content), lipgloss.Height(content), lipgloss.Height(sidebar), m.height)
+	if markdownHeight > m.height {
+		t.Fatalf("view height = %d, terminal = %d", markdownHeight, m.height)
+	}
+	m.focusSide = true
+	if strings.Contains(ansi.Strip(m.View()), "Paragraph") {
+		t.Fatal("detail panel should be empty without a selected task")
 	}
 }
 
@@ -594,7 +593,7 @@ func TestStatusFilterAndIcons(t *testing.T) {
 
 func TestTaskDetailShowsColoredProjectPriorityAndStatus(t *testing.T) {
 	m := model{projects: []project{{ID: 7, Name: "Work", Color: "#ff00ff"}}}
-	got := m.taskDetail(task{ProjectID: 7, Priority: "high", Status: "waiting"}, 40)
+	got := m.taskDetail(task{Name: "Task", ProjectID: 7, Project: &project{ID: 7, Name: "Work"}, Priority: "high", Status: "waiting", Note: "Description"}, 40)
 	for _, want := range []string{
 		lipgloss.NewStyle().Foreground(lipgloss.Color("#ff00ff")).Bold(true).Render("Work"),
 		lipgloss.NewStyle().Foreground(lipgloss.Color(priorityColor("high"))).Bold(true).Render("High"),
@@ -603,6 +602,11 @@ func TestTaskDetailShowsColoredProjectPriorityAndStatus(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("task detail missing %q: %q", want, got)
 		}
+	}
+	plain := ansi.Strip(got)
+	lines := strings.Split(plain, "\n")
+	if strings.TrimSpace(lines[0]) != "Task" || lines[1] != strings.Repeat("─", 40) || strings.Count(plain, strings.Repeat("─", 40)) != 2 {
+		t.Fatalf("task detail separators missing: %q", plain)
 	}
 }
 

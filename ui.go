@@ -1120,17 +1120,24 @@ func (m model) View() string {
 		sideW = 20
 	}
 	mainW := m.width - sideW - 1
-	editorW := 0
-	if m.editor != nil && m.editor.kind == editTask && m.page != pageCalendar {
-		editorW = min(64, max(38, m.width/3))
-		mainW -= editorW
+	rightW := 0
+	if m.page != pageDashboard && m.page != pageCalendar && m.page != pageTags {
+		rightW = min(64, max(38, m.width/3))
+		mainW -= rightW
 	}
 	sidebar := panel.Width(sideW - 2).Height(m.height - 3).Render(m.sidebarView())
 	content := panel.Width(mainW - 2).Height(m.height - 3).Render(m.contentView(mainW - 4))
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, content)
-	if editorW > 0 {
-		editor := panel.Width(editorW - 2).Height(m.height - 3).Render(m.editorContent(editorW-4, m.height-5))
-		body = lipgloss.JoinHorizontal(lipgloss.Top, body, editor)
+	if rightW > 0 {
+		right := ""
+		if m.editor != nil && m.editor.kind == editTask {
+			right = m.editorContent(rightW-4, m.height-5)
+		} else if !m.focusSide {
+			if t, ok := m.selectedTask(); ok {
+				right = m.taskDetail(t, rightW-4)
+			}
+		}
+		body = lipgloss.JoinHorizontal(lipgloss.Top, body, panel.Width(rightW-2).Height(m.height-3).MaxHeight(m.height-1).Render(right))
 	} else if m.editor != nil && m.editor.kind == editTask {
 		popupW := min(64, m.width-8)
 		popup := panel.Width(popupW - 2).Render(m.editorContent(popupW-4, min(24, m.height-4)))
@@ -1266,10 +1273,6 @@ func (m model) contentView(width int) string {
 		return b.String()
 	}
 	listW := width
-	details := width >= 92
-	if details {
-		listW = width * 55 / 100
-	}
 	visibleCount := max(1, (m.height-8)/3)
 	start := 0
 	if m.cursor >= visibleCount {
@@ -1284,18 +1287,7 @@ func (m model) contentView(width int) string {
 			list.WriteString("\n" + dim.Render(strings.Repeat("─", max(1, listW-2))) + "\n")
 		}
 	}
-	if !details {
-		return b.String() + list.String()
-	}
-	detail := ""
-	if m.cursor < len(ts) {
-		detail = m.taskDetail(ts[m.cursor], width-listW-3)
-	}
-	detailHeight := max(3, m.height-7)
-	detailWidth := width - listW
-	detailPanel := panel.Width(detailWidth - 2).MaxWidth(detailWidth).Height(detailHeight).MaxHeight(detailHeight + 2).Render(detail)
-	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(listW).Render(list.String()), detailPanel))
-	return b.String()
+	return b.String() + list.String()
 }
 
 type dashboardStats struct {
@@ -1563,7 +1555,8 @@ func (m model) taskListItem(t task, width int, active bool) string {
 
 func (m model) taskDetail(t task, width int) string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render(t.Name) + "\n")
+	b.WriteString(lipgloss.PlaceHorizontal(width, lipgloss.Center, titleStyle.Render(t.Name)) + "\n")
+	b.WriteString(dim.Render(strings.Repeat("─", max(1, width))) + "\n")
 	if p := m.taskProject(t); p != nil {
 		b.WriteString(dim.Render("Project: ") + lipgloss.NewStyle().Foreground(lipgloss.Color(p.Color)).Bold(true).Render(p.Name) + "\n")
 	}
@@ -1583,24 +1576,25 @@ func (m model) taskDetail(t task, width int) string {
 		b.WriteByte('\n')
 	}
 	if t.Note != "" {
+		b.WriteString(dim.Render(strings.Repeat("─", max(1, width))) + "\n")
 		rendered, err := glamour.Render(t.Note, "dark")
 		if err == nil {
-			b.WriteString("\n" + rendered)
+			b.WriteString(rendered)
 		} else {
-			b.WriteString("\n" + t.Note)
+			b.WriteString(t.Note)
 		}
 	}
 	return b.String()
 }
 
 func (m model) taskProject(t task) *project {
-	if t.Project != nil {
-		return t.Project
-	}
 	for i := range m.projects {
 		if (t.ProjectID != 0 && m.projects[i].ID == t.ProjectID) || (t.ProjectUID != "" && m.projects[i].UID == t.ProjectUID) {
 			return &m.projects[i]
 		}
+	}
+	if t.Project != nil {
+		return t.Project
 	}
 	return nil
 }
