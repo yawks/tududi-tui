@@ -243,7 +243,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.help = true
 	case "s":
-		m.menu, m.menuIndex = "sort", 0
+		m.menu, m.menuIndex = "sort", max(0, slices.Index([]string{"date", "name", "priority", "tag"}, m.sortBy))
 	case "f":
 		m.menu, m.menuIndex = "filter", 0
 	case "tab":
@@ -300,8 +300,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.page == pageTags {
 			m.openEdit()
 		} else if m.page == pageCalendar && len(m.tasksDueOn(m.calDate)) > 0 {
-			m.calendarTasks = true
-			m.cursor = 0
+			if m.calendarTasks {
+				m.openEdit()
+			} else {
+				m.calendarTasks = true
+				m.cursor = 0
+			}
 		}
 	case "esc":
 		m.calendarTasks = false
@@ -509,6 +513,13 @@ func (m model) currentLen() int {
 	return len(m.filteredTasks())
 }
 func (m model) selectedTask() (task, bool) {
+	if m.page == pageCalendar && m.calendarTasks {
+		ts := m.tasksDueOn(m.calDate)
+		if m.cursor < len(ts) {
+			return ts[m.cursor], true
+		}
+		return task{}, false
+	}
 	ts := m.filteredTasks()
 	if m.page == pageDashboard || m.page == pageTags || m.page == pageCalendar || m.cursor >= len(ts) {
 		return task{}, false
@@ -802,24 +813,34 @@ func selectedNames(value string) map[string]bool {
 
 func (m model) updateMenu(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	count := 4
+	if m.menu == "sort-direction" {
+		count = 2
+	}
 	if m.menu == "filter" {
 		count = 6 + len(m.tags)
 	}
 	switch key.String() {
 	case "esc":
-		m.menu = ""
+		if m.menu == "sort-direction" {
+			m.menu, m.menuIndex = "sort", slices.Index([]string{"date", "name", "priority", "tag"}, m.sortBy)
+		} else {
+			m.menu = ""
+		}
 	case "up", "k":
 		m.menuIndex = (m.menuIndex - 1 + count) % count
 	case "down", "j":
 		m.menuIndex = (m.menuIndex + 1) % count
 	case "enter", " ":
 		if m.menu == "sort" {
-			selected := []string{"date", "name", "priority", "tag"}[m.menuIndex]
-			if m.sortBy == selected {
-				m.sortDesc = !m.sortDesc
-			} else {
-				m.sortBy, m.sortDesc = selected, false
+			m.sortBy = []string{"date", "name", "priority", "tag"}[m.menuIndex]
+			m.menu, m.menuIndex = "sort-direction", 0
+			if m.sortDesc {
+				m.menuIndex = 1
 			}
+			return m, nil
+		}
+		if m.menu == "sort-direction" {
+			m.sortDesc = m.menuIndex == 1
 			m.menu, m.cursor = "", 0
 			return m, m.saveStateCmd()
 		}
@@ -862,7 +883,18 @@ func (m model) menuView() string {
 			}
 			lines = append(lines, mark+value+active)
 		}
-		return titleStyle.Render("Sort tasks") + "\n\n" + strings.Join(lines, "\n") + "\n\n" + dim.Render("enter choose/reverse  esc close")
+		return titleStyle.Render("Sort tasks") + "\n\n" + strings.Join(lines, "\n") + "\n\n" + dim.Render("enter continue  esc close")
+	}
+	if m.menu == "sort-direction" {
+		var lines []string
+		for i, value := range []string{"Ascending ↑", "Descending ↓"} {
+			mark := "  "
+			if i == m.menuIndex {
+				mark = "> "
+			}
+			lines = append(lines, mark+value)
+		}
+		return titleStyle.Render("Sort direction") + "\n\n" + strings.Join(lines, "\n") + "\n\n" + dim.Render("enter apply  esc back")
 	}
 	priorities := []string{"Any priority", "Low", "Medium", "High"}
 	var lines []string
@@ -1057,7 +1089,7 @@ func (m model) View() string {
 	}
 	mainW := m.width - sideW - 1
 	editorW := 0
-	if m.editor != nil && m.editor.kind == editTask {
+	if m.editor != nil && m.editor.kind == editTask && m.page != pageCalendar {
 		editorW = min(64, max(38, m.width/3))
 		mainW -= editorW
 	}
@@ -1067,6 +1099,10 @@ func (m model) View() string {
 	if editorW > 0 {
 		editor := panel.Width(editorW - 2).Height(m.height - 3).Render(m.editorContent(editorW-4, m.height-5))
 		body = lipgloss.JoinHorizontal(lipgloss.Top, body, editor)
+	} else if m.editor != nil && m.editor.kind == editTask {
+		popupW := min(64, m.width-8)
+		popup := panel.Width(popupW - 2).Render(m.editorContent(popupW-4, min(24, m.height-4)))
+		body = overlayCentered(body, popup)
 	}
 	footer := m.footerView()
 	if m.err != "" {
@@ -1669,7 +1705,7 @@ func (m model) calendarTasksPopup(width int) string {
 			b.WriteString("\n\n")
 		}
 	}
-	b.WriteString("\n\n" + dim.Render("↑/↓ task  esc close"))
+	b.WriteString("\n\n" + dim.Render("↑/↓ task  enter edit  esc close"))
 	return panel.Width(popupW - 2).Render(b.String())
 }
 
@@ -1690,24 +1726,7 @@ func overlayCentered(base, popup string) string {
 }
 
 func (m model) calendarTaskLines(t task, width int, active bool) []string {
-	title := truncate(t.Name, width)
-	var tags []string
-	for _, tag := range t.Tags {
-		name := "#" + tag.Name
-		if !active && tag.Color != "" {
-			name = lipgloss.NewStyle().Foreground(lipgloss.Color(tag.Color)).Render(name)
-		}
-		if lipgloss.Width(strings.Join(append(tags, name), " ")) > width {
-			break
-		}
-		tags = append(tags, name)
-	}
-	metadata := strings.Join(tags, " ")
-	if active {
-		style := selected.Width(width)
-		return []string{style.Render(title), style.Render(metadata)}
-	}
-	return []string{title, metadata}
+	return strings.Split(m.taskListItem(t, width+2, active), "\n")
 }
 
 func (m model) editorView() string {

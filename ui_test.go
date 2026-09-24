@@ -144,6 +144,29 @@ func TestTaskPrioritySortAndFilters(t *testing.T) {
 	}
 }
 
+func TestSortChoosesCriterionThenDirection(t *testing.T) {
+	m := model{menu: "sort"}
+	updated, _ := m.updateMenu(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+	if m.menu != "sort-direction" || m.sortBy != "date" {
+		t.Fatalf("criterion selection = %#v", m)
+	}
+	m.menuIndex = 1
+	updated, _ = m.updateMenu(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := updated.(model); got.sortBy != "date" || !got.sortDesc {
+		t.Fatalf("descending due date selection = %#v", got.persistedState())
+	}
+
+	m = model{menu: "sort", menuIndex: 2}
+	updated, _ = m.updateMenu(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+	m.menuIndex = 0
+	updated, _ = m.updateMenu(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := updated.(model); got.sortBy != "priority" || got.sortDesc {
+		t.Fatalf("ascending priority selection = %#v", got.persistedState())
+	}
+}
+
 func TestLateTagIsShownOnlyForOverdueActiveTasks(t *testing.T) {
 	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
 	m := model{}
@@ -324,6 +347,38 @@ func TestCalendarNavigationAndTaskBrowsing(t *testing.T) {
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
 	if got := updated.(model).calDate; !sameDay(got, day.AddDate(0, 0, 1)) {
 		t.Fatal("right should select the next calendar day")
+	}
+}
+
+func TestCalendarTasksReuseListMetadata(t *testing.T) {
+	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	lines := (model{}).calendarTaskLines(task{
+		Name: "late calendar task", Priority: "high", DueDate: yesterday,
+		Tags: []tag{{Name: "urgent", Color: "#ff0000"}},
+	}, 60, false)
+	got := ansi.Strip(strings.Join(lines, "\n"))
+	if !strings.Contains(got, "#urgent") || !strings.Contains(got, "⚠  late") || !strings.HasSuffix(ansi.Strip(lines[1]), "H") {
+		t.Fatalf("calendar task metadata missing: %q", got)
+	}
+}
+
+func TestEnterEditsCalendarTaskInPopupAndEscapeReturnsToTasks(t *testing.T) {
+	day := time.Now()
+	m := model{page: pageCalendar, width: 160, height: 30, calDate: day, calendarTasks: true, cursor: 1, tasks: []task{
+		{UID: "first", Name: "first task", DueDate: day.Format(time.RFC3339)},
+		{UID: "second", Name: "second task", DueDate: day.Format(time.RFC3339)},
+	}}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+	if m.editor == nil || m.editor.task.UID != "second" || !strings.Contains(m.View(), "Edit task") {
+		t.Fatal("enter should edit the selected calendar task in a popup")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(model)
+	if m.editor != nil || !m.calendarTasks || !strings.Contains(m.View(), "second task") {
+		t.Fatal("escape should discard editing and return to the day's task list")
 	}
 }
 
