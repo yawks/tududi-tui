@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -112,6 +113,12 @@ type model struct {
 	editor             *editor
 	confirm            bool
 	help               bool
+	menu               string
+	menuIndex          int
+	sortBy             string
+	sortDesc           bool
+	priorityFilter     string
+	tagFilters         map[string]bool
 }
 
 var (
@@ -129,8 +136,11 @@ func newModel(api *client, state appState) model {
 	side := sideAllFilters
 	if p <= pageUnplanned {
 		side = int(p) + sideToday
+	} else if p == pageDashboard {
+		side = sideDashboard
 	}
-	return model{api: api, page: p, side: side, selectedProjectUID: state.ProjectUID, lastFilter: state.Filter, focusSide: true, loading: true, calDate: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())}
+	tagFilters := selectedNames(state.Tags)
+	return model{api: api, page: p, side: side, selectedProjectUID: state.ProjectUID, lastFilter: state.Filter, focusSide: true, loading: true, calDate: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()), sortBy: state.Sort, sortDesc: state.SortDesc, priorityFilter: state.Priority, tagFilters: tagFilters}
 }
 
 func pageFromFilter(filter string) page {
@@ -141,6 +151,8 @@ func pageFromFilter(filter string) page {
 		return pageUnplanned
 	case "all":
 		return pageAll
+	case "dashboard":
+		return pageDashboard
 	default:
 		return pageToday
 	}
@@ -154,7 +166,13 @@ func (m model) persistedState() appState {
 	if filter == "" {
 		filter = "today"
 	}
-	return appState{ProjectUID: m.selectedProjectUID, Filter: filter}
+	var tags []string
+	for _, tag := range m.tags {
+		if m.tagFilters[strings.ToLower(tag.Name)] {
+			tags = append(tags, tag.Name)
+		}
+	}
+	return appState{ProjectUID: m.selectedProjectUID, Filter: filter, Sort: m.sortBy, SortDesc: m.sortDesc, Priority: m.priorityFilter, Tags: strings.Join(tags, ",")}
 }
 
 func (m model) saveStateCmd() tea.Cmd {
@@ -216,11 +234,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.menu != "" {
+		return m.updateMenu(key)
+	}
 	switch key.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	case "?":
 		m.help = true
+	case "s":
+		m.menu, m.menuIndex = "sort", 0
+	case "f":
+		m.menu, m.menuIndex = "filter", 0
 	case "tab":
 		m.focusSide = !m.focusSide
 	case "h":
@@ -365,8 +390,9 @@ func (m *model) chooseSide() tea.Cmd {
 	m.cursor = 0
 	if m.side == sideDashboard {
 		m.page = pageDashboard
+		m.lastFilter = "dashboard"
 		m.focusSide = false
-		return nil
+		return m.saveStateCmd()
 	}
 	if m.side == sideAllFilters {
 		m.page, m.lastFilter = pageAll, "all"
@@ -404,6 +430,18 @@ func (m model) filteredTasks() []task {
 		if !m.matchesSelectedProject(t) {
 			continue
 		}
+		if m.priorityFilter != "" && priorityName(t.Priority) != m.priorityFilter {
+			continue
+		}
+		if len(m.tagFilters) > 0 {
+			matchTag := false
+			for _, tag := range t.Tags {
+				matchTag = matchTag || m.tagFilters[strings.ToLower(tag.Name)]
+			}
+			if !matchTag {
+				continue
+			}
+		}
 		due, hasDue := t.due()
 		match := false
 		switch m.page {
@@ -421,13 +459,40 @@ func (m model) filteredTasks() []task {
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		a, aDue := out[i].due()
-		b, bDue := out[j].due()
-		if aDue != bDue {
-			return aDue
+		less := false
+		switch m.sortBy {
+		case "name":
+			less = strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+		case "priority":
+			order := map[string]int{"low": 0, "medium": 1, "high": 2}
+			less = order[priorityName(out[i].Priority)] < order[priorityName(out[j].Priority)]
+		case "tag":
+			first := func(t task) string {
+				if len(t.Tags) == 0 {
+					return "~"
+				}
+				names := make([]string, len(t.Tags))
+				for i, tag := range t.Tags {
+					names[i] = strings.ToLower(tag.Name)
+				}
+				slices.Sort(names)
+				return names[0]
+			}
+			less = first(out[i]) < first(out[j])
+		default:
+			a, aDue := out[i].due()
+			b, bDue := out[j].due()
+			if aDue != bDue {
+				less = aDue
+			} else {
+				less = aDue && a.Before(b)
+			}
 		}
-		return aDue && a.Before(b)
+		return less
 	})
+	if m.sortDesc {
+		slices.Reverse(out)
+	}
 	return out
 }
 
@@ -512,7 +577,7 @@ func (m *model) openNew() {
 	case pageTags:
 		m.editor = &editor{kind: editTag, create: true, fields: []textinput.Model{input("", "Name"), input("#3b82f6", "#RRGGBB")}}
 	default:
-		m.editor = &editor{kind: editTask, create: true, fields: []textinput.Model{input("", "Name"), input("", "Due date"), input("", "Project"), input("", "Tags, comma separated")}, note: note("", "Markdown description")}
+		m.editor = &editor{kind: editTask, create: true, fields: []textinput.Model{input("", "Name"), input("medium", "Priority"), input("", "Due date"), input("", "Project"), input("", "Tags, comma separated")}, note: note("", "Markdown description")}
 	}
 	m.editor.fields[0].Focus()
 }
@@ -541,7 +606,7 @@ func (m *model) openEdit() {
 		for i, v := range t.Tags {
 			names[i] = v.Name
 		}
-		m.editor = &editor{kind: editTask, task: t, fields: []textinput.Model{input(t.Name, "Name"), input(due, "Due date"), input(projectName, "Project"), input(strings.Join(names, ", "), "Tags")}, note: note(t.Note, "Markdown description")}
+		m.editor = &editor{kind: editTask, task: t, fields: []textinput.Model{input(t.Name, "Name"), input(priorityName(t.Priority), "Priority"), input(due, "Due date"), input(projectName, "Project"), input(strings.Join(names, ", "), "Tags")}, note: note(t.Note, "Markdown description")}
 	}
 	if m.editor != nil {
 		m.editor.fields[0].Focus()
@@ -588,7 +653,7 @@ func (m model) updateEditor(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.saveEditor()
 	case "ctrl+d":
 		if e.kind == editTask {
-			d, err := time.Parse("2006-01-02", e.fields[1].Value())
+			d, err := time.Parse("2006-01-02", e.fields[2].Value())
 			if err != nil {
 				d = time.Now()
 			}
@@ -599,19 +664,21 @@ func (m model) updateEditor(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if e.kind == editTask {
 			switch e.focus {
 			case 1:
-				d, err := time.Parse("2006-01-02", e.fields[1].Value())
+				e.choice, e.choiceIndex = 3, max(0, slices.Index([]string{"low", "medium", "high"}, e.fields[1].Value()))
+			case 2:
+				d, err := time.Parse("2006-01-02", e.fields[2].Value())
 				if err != nil {
 					d = time.Now()
 				}
 				e.date, e.calendar = d, true
-			case 2:
+			case 3:
 				e.choice, e.choiceIndex = 1, 0
 				for i, p := range m.projects {
-					if strings.EqualFold(p.Name, e.fields[2].Value()) {
+					if strings.EqualFold(p.Name, e.fields[3].Value()) {
 						e.choiceIndex = i + 1
 					}
 				}
-			case 3:
+			case 4:
 				e.choice, e.choiceIndex = 2, 0
 			}
 			return m, nil
@@ -665,7 +732,7 @@ func (m model) updateEditor(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			e.note.SetHeight(max(3, m.height-25))
 		}
 		e.note, cmd = e.note.Update(key)
-	} else if e.kind == editTask && (e.focus == 2 || e.focus == 3) {
+	} else if e.kind == editTask && e.focus >= 1 && e.focus <= 4 {
 		return m, nil
 	} else {
 		e.fields[e.focus], cmd = e.fields[e.focus].Update(key)
@@ -678,6 +745,8 @@ func (m model) updateTaskChoice(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	count := len(m.projects) + 1
 	if e.choice == 2 {
 		count = len(m.tags)
+	} else if e.choice == 3 {
+		count = 3
 	}
 	switch key.String() {
 	case "esc", "tab", "shift+tab":
@@ -691,16 +760,19 @@ func (m model) updateTaskChoice(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			e.choiceIndex = (e.choiceIndex + 1) % count
 		}
 	case "enter", " ":
-		if e.choice == 1 {
+		if e.choice == 3 {
+			e.fields[1].SetValue([]string{"low", "medium", "high"}[e.choiceIndex])
+			e.choice = 0
+		} else if e.choice == 1 {
 			if e.choiceIndex == 0 {
-				e.fields[2].SetValue("")
+				e.fields[3].SetValue("")
 			} else {
-				e.fields[2].SetValue(m.projects[e.choiceIndex-1].Name)
+				e.fields[3].SetValue(m.projects[e.choiceIndex-1].Name)
 			}
 			e.choice = 0
 		} else if count > 0 {
 			name := m.tags[e.choiceIndex].Name
-			selected := selectedNames(e.fields[3].Value())
+			selected := selectedNames(e.fields[4].Value())
 			if selected[strings.ToLower(name)] {
 				delete(selected, strings.ToLower(name))
 			} else {
@@ -712,7 +784,7 @@ func (m model) updateTaskChoice(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 					names = append(names, tag.Name)
 				}
 			}
-			e.fields[3].SetValue(strings.Join(names, ", "))
+			e.fields[4].SetValue(strings.Join(names, ", "))
 		}
 	}
 	return m, nil
@@ -726,6 +798,102 @@ func selectedNames(value string) map[string]bool {
 		}
 	}
 	return selected
+}
+
+func (m model) updateMenu(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	count := 4
+	if m.menu == "filter" {
+		count = 6 + len(m.tags)
+	}
+	switch key.String() {
+	case "esc":
+		m.menu = ""
+	case "up", "k":
+		m.menuIndex = (m.menuIndex - 1 + count) % count
+	case "down", "j":
+		m.menuIndex = (m.menuIndex + 1) % count
+	case "enter", " ":
+		if m.menu == "sort" {
+			selected := []string{"date", "name", "priority", "tag"}[m.menuIndex]
+			if m.sortBy == selected {
+				m.sortDesc = !m.sortDesc
+			} else {
+				m.sortBy, m.sortDesc = selected, false
+			}
+			m.menu, m.cursor = "", 0
+			return m, m.saveStateCmd()
+		}
+		switch {
+		case m.menuIndex < 4:
+			m.priorityFilter = []string{"", "low", "medium", "high"}[m.menuIndex]
+		case m.menuIndex < 4+len(m.tags):
+			name := strings.ToLower(m.tags[m.menuIndex-4].Name)
+			if m.tagFilters[name] {
+				delete(m.tagFilters, name)
+			} else {
+				m.tagFilters[name] = true
+			}
+		case m.menuIndex == 4+len(m.tags):
+			m.priorityFilter, m.tagFilters = "", map[string]bool{}
+		default:
+			m.menu, m.cursor = "", 0
+		}
+		return m, m.saveStateCmd()
+	}
+	return m, nil
+}
+
+func (m model) menuView() string {
+	if m.menu == "sort" {
+		var lines []string
+		for i, value := range []string{"Due date", "Name", "Priority", "Tag"} {
+			key := []string{"date", "name", "priority", "tag"}[i]
+			mark := "  "
+			if i == m.menuIndex {
+				mark = "> "
+			}
+			active := ""
+			if m.sortBy == key {
+				if m.sortDesc {
+					active = " ↓"
+				} else {
+					active = " ↑"
+				}
+			}
+			lines = append(lines, mark+value+active)
+		}
+		return titleStyle.Render("Sort tasks") + "\n\n" + strings.Join(lines, "\n") + "\n\n" + dim.Render("enter choose/reverse  esc close")
+	}
+	priorities := []string{"Any priority", "Low", "Medium", "High"}
+	var lines []string
+	for i, value := range priorities {
+		mark, checked := "  ", "( ) "
+		if i == m.menuIndex {
+			mark = "> "
+		}
+		if m.priorityFilter == []string{"", "low", "medium", "high"}[i] {
+			checked = "(x) "
+		}
+		lines = append(lines, mark+checked+value)
+	}
+	for i, tag := range m.tags {
+		index, mark, checked := 4+i, "  ", "[ ] "
+		if index == m.menuIndex {
+			mark = "> "
+		}
+		if m.tagFilters[strings.ToLower(tag.Name)] {
+			checked = "[x] "
+		}
+		lines = append(lines, mark+checked+"#"+tag.Name)
+	}
+	for i, value := range []string{"Clear filters", "Apply"} {
+		mark := "  "
+		if m.menuIndex == 4+len(m.tags)+i {
+			mark = "> "
+		}
+		lines = append(lines, mark+value)
+	}
+	return titleStyle.Render("Filter tasks") + "\n\n" + strings.Join(lines, "\n") + "\n\n" + dim.Render("space select  enter apply  esc close")
 }
 
 func (m model) updateColorPicker(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -802,10 +970,10 @@ func (m model) updateMiniCalendar(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "]":
 		e.date = e.date.AddDate(0, 1, 0)
 	case "backspace", "delete":
-		e.fields[1].SetValue("")
+		e.fields[2].SetValue("")
 		e.calendar = false
 	case "enter":
-		e.fields[1].SetValue(e.date.Format("2006-01-02"))
+		e.fields[2].SetValue(e.date.Format("2006-01-02"))
 		e.calendar = false
 	}
 	return m, nil
@@ -833,8 +1001,8 @@ func (m model) saveEditor() (tea.Model, tea.Cmd) {
 		return m, action(func() error { return m.api.saveProject(p, e.create) })
 	default:
 		t := e.task
-		t.Name, t.Note, t.DueDate = strings.TrimSpace(e.fields[0].Value()), e.note.Value(), ""
-		if d := strings.TrimSpace(e.fields[1].Value()); d != "" {
+		t.Name, t.Priority, t.Note, t.DueDate = strings.TrimSpace(e.fields[0].Value()), e.fields[1].Value(), e.note.Value(), ""
+		if d := strings.TrimSpace(e.fields[2].Value()); d != "" {
 			parsed, err := time.Parse("2006-01-02", d)
 			if err != nil {
 				m.loading = false
@@ -844,7 +1012,7 @@ func (m model) saveEditor() (tea.Model, tea.Cmd) {
 			t.DueDate = parsed.Format(time.RFC3339)
 		}
 		t.ProjectID = 0
-		pn := strings.TrimSpace(e.fields[2].Value())
+		pn := strings.TrimSpace(e.fields[3].Value())
 		for _, p := range m.projects {
 			if strings.EqualFold(p.Name, pn) {
 				t.ProjectID = p.ID
@@ -857,7 +1025,7 @@ func (m model) saveEditor() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		t.Tags = nil
-		for _, name := range strings.Split(e.fields[3].Value(), ",") {
+		for _, name := range strings.Split(e.fields[4].Value(), ",") {
 			name = strings.TrimSpace(name)
 			if name != "" {
 				t.Tags = append(t.Tags, tag{Name: name})
@@ -879,6 +1047,9 @@ func (m model) View() string {
 	}
 	if m.confirm {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel.Width(42).Render("Delete selected item?\n\n[y/enter] delete   [n/esc] cancel"))
+	}
+	if m.menu != "" {
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel.Width(52).Render(m.menuView()))
 	}
 	sideW := 24
 	if m.width < 100 {
@@ -912,7 +1083,7 @@ func (m model) footerView() string {
 	if m.showCompleted {
 		completionLabel = "active"
 	}
-	items := [][2]string{{"tab", "focus"}, {"n", "new"}, {"e", "edit"}, {"d", "delete"}, {"space", "complete"}, {"h", completionLabel}, {"r", "refresh"}, {"?", "help"}, {"q", "quit"}}
+	items := [][2]string{{"tab", "focus"}, {"n", "new"}, {"e", "edit"}, {"d", "delete"}, {"space", "complete"}, {"s", "sort"}, {"f", "filter"}, {"h", completionLabel}, {"r", "refresh"}, {"?", "help"}, {"q", "quit"}}
 	if m.width < 150 {
 		items = [][2]string{{"tab", "focus"}, {"n", "new"}, {"e", "edit"}, {"d", "delete"}, {"space", "done"}, {"h", completionLabel}, {"?", "help"}, {"q", "quit"}}
 	}
@@ -999,6 +1170,25 @@ func (m model) contentView(width int) string {
 	if m.showCompleted {
 		b.WriteString(dim.Render("  · completed only"))
 	}
+	if m.sortBy != "" {
+		direction := "↑"
+		if m.sortDesc {
+			direction = "↓"
+		}
+		b.WriteString(dim.Render("  · sort: " + strings.Title(m.sortBy) + " " + direction))
+	}
+	if m.priorityFilter != "" || len(m.tagFilters) > 0 {
+		var filters []string
+		if m.priorityFilter != "" {
+			filters = append(filters, "priority: "+strings.ToUpper(m.priorityFilter[:1]))
+		}
+		for _, tag := range m.tags {
+			if m.tagFilters[strings.ToLower(tag.Name)] {
+				filters = append(filters, "#"+tag.Name)
+			}
+		}
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#a855f7")).Bold(true).Render("  · filters: " + strings.Join(filters, ", ")))
+	}
 	b.WriteString("\n\n")
 	if len(ts) == 0 {
 		b.WriteString(dim.Render(labels.Empty))
@@ -1030,9 +1220,9 @@ func (m model) contentView(width int) string {
 	if m.cursor < len(ts) {
 		detail = m.taskDetail(ts[m.cursor], width-listW-3)
 	}
-	detailHeight := max(3, m.height-9)
+	detailHeight := max(3, m.height-7)
 	detailWidth := width - listW
-	detailPanel := panel.Width(detailWidth - 2).MaxWidth(detailWidth).Height(detailHeight).MaxHeight(detailHeight).Render(detail)
+	detailPanel := panel.Width(detailWidth - 2).MaxWidth(detailWidth).Height(detailHeight).MaxHeight(detailHeight + 2).Render(detail)
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(listW).Render(list.String()), detailPanel))
 	return b.String()
 }
@@ -1281,8 +1471,15 @@ func (m model) taskListItem(t task, width int, active bool) string {
 		second = " "
 	}
 	if late != "" {
-		second += strings.Repeat(" ", max(1, width-2-lipgloss.Width(second)-lipgloss.Width(late))) + late
+		metadata = append(metadata, late)
 	}
+	priority := map[string]string{"low": "L", "medium": "M", "high": "H"}[priorityName(t.Priority)]
+	priorityColor := map[string]string{"L": "#3b82f6", "M": "#f59e0b", "H": "#ef4444"}[priority]
+	if !active {
+		priority = lipgloss.NewStyle().Foreground(lipgloss.Color(priorityColor)).Bold(true).Render(priority)
+	}
+	second = "  " + strings.Join(metadata, "  ")
+	second += strings.Repeat(" ", max(1, width-2-lipgloss.Width(second)-lipgloss.Width(priority))) + priority
 	item := title + "\n" + second
 	if active {
 		if t.completed() {
@@ -1530,7 +1727,7 @@ func (m model) editorView() string {
 
 func (m model) editorContent(width, height int) string {
 	e := m.editor
-	names := map[editorKind][]string{editTask: {"Name", "Due date", "Project", "Tags"}, editProject: {"Name", "Color", "Status"}, editTag: {"Name", "Color"}}[e.kind]
+	names := map[editorKind][]string{editTask: {"Name", "Priority", "Due date", "Project", "Tags"}, editProject: {"Name", "Color", "Status"}, editTag: {"Name", "Color"}}[e.kind]
 	var b strings.Builder
 	actionName := "Edit"
 	if e.create {
@@ -1548,7 +1745,7 @@ func (m model) editorContent(width, height int) string {
 		if e.kind == editTask && e.choice != 0 && i == e.focus {
 			b.WriteString(m.taskChoiceView(width) + "\n")
 		}
-		if e.kind == editTask && i == 3 {
+		if e.kind == editTask && i == 4 {
 			b.WriteString(m.tagPreview(f.Value()) + "\n")
 		}
 	}
@@ -1576,13 +1773,15 @@ func (m model) taskChoiceView(width int) string {
 	e := m.editor
 	var options []string
 	selected := map[string]bool{}
-	if e.choice == 1 {
+	if e.choice == 3 {
+		options = []string{"low", "medium", "high"}
+	} else if e.choice == 1 {
 		options = append(options, "No project")
 		for _, p := range m.projects {
 			options = append(options, p.Name)
 		}
 	} else {
-		selected = selectedNames(e.fields[3].Value())
+		selected = selectedNames(e.fields[4].Value())
 		for _, tag := range m.tags {
 			options = append(options, tag.Name)
 		}

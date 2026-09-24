@@ -10,6 +10,10 @@ import (
 type appState struct {
 	ProjectUID string `json:"project_uid,omitempty"`
 	Filter     string `json:"filter"`
+	Sort       string `json:"sort,omitempty"`
+	SortDesc   bool   `json:"sort_desc,omitempty"`
+	Priority   string `json:"priority,omitempty"`
+	Tags       string `json:"tags,omitempty"`
 }
 
 func statePath() (string, error) {
@@ -36,8 +40,14 @@ func loadState() (appState, error) {
 	if err := json.Unmarshal(b, &state); err != nil {
 		return appState{Filter: "today"}, err
 	}
-	if state.Filter != "all" && state.Filter != "today" && state.Filter != "upcoming" && state.Filter != "unplanned" {
+	if state.Filter != "all" && state.Filter != "today" && state.Filter != "upcoming" && state.Filter != "unplanned" && state.Filter != "dashboard" {
 		state.Filter = "today"
+	}
+	if state.Sort != "" && state.Sort != "date" && state.Sort != "name" && state.Sort != "priority" && state.Sort != "tag" {
+		state.Sort = ""
+	}
+	if state.Priority != "" && state.Priority != "low" && state.Priority != "medium" && state.Priority != "high" {
+		state.Priority = ""
 	}
 	return state, nil
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestNumericTaskPriorityFromAPI(t *testing.T) {
@@ -128,6 +129,21 @@ func TestTaskListItemHasTitleMetadataAndDueDate(t *testing.T) {
 	}
 }
 
+func TestTaskPrioritySortAndFilters(t *testing.T) {
+	m := model{page: pageAll, sortBy: "priority", sortDesc: true, priorityFilter: "high", tagFilters: map[string]bool{"work": true}, tasks: []task{
+		{Name: "high work", Priority: "high", Tags: []tag{{Name: "work"}}},
+		{Name: "high home", Priority: "high", Tags: []tag{{Name: "home"}}},
+		{Name: "low work", Priority: "low", Tags: []tag{{Name: "work"}}},
+	}}
+	got := m.filteredTasks()
+	if len(got) != 1 || got[0].Name != "high work" {
+		t.Fatalf("filtered tasks = %#v", got)
+	}
+	if item := m.taskListItem(got[0], 60, false); !strings.HasSuffix(ansi.Strip(strings.Split(item, "\n")[1]), "H") {
+		t.Fatalf("priority is not right aligned: %q", item)
+	}
+}
+
 func TestLateTagIsShownOnlyForOverdueActiveTasks(t *testing.T) {
 	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
 	m := model{}
@@ -180,6 +196,10 @@ func TestMarkdownDetailDoesNotChangeContentHeight(t *testing.T) {
 	}
 	m.cursor = 0
 	shortHeight := lipgloss.Height(m.contentView(130))
+	lines := strings.Split(ansi.Strip(m.contentView(130)), "\n")
+	if bottom := lines[len(lines)-1]; !strings.Contains(bottom, "╰") || !strings.Contains(bottom, "╯") {
+		t.Fatalf("task detail bottom border is not closed: %q", bottom)
+	}
 	m.cursor = 1
 	markdownHeight := lipgloss.Height(m.contentView(130))
 	if shortHeight != markdownHeight {
@@ -255,6 +275,16 @@ func TestFilterSelectionAndAll(t *testing.T) {
 	}
 	if m.persistedState().Filter != "all" {
 		t.Fatal("cleared filter should be persisted")
+	}
+}
+
+func TestDashboardSelectionIsPersisted(t *testing.T) {
+	m := model{side: sideDashboard}
+	if m.chooseSide() == nil || m.persistedState().Filter != "dashboard" {
+		t.Fatal("dashboard selection should be persisted")
+	}
+	if got := newModel(nil, m.persistedState()); got.page != pageDashboard || got.side != sideDashboard {
+		t.Fatalf("dashboard state restored as page=%v side=%v", got.page, got.side)
 	}
 }
 
@@ -447,7 +477,7 @@ func TestTaskEditorPickers(t *testing.T) {
 	m := model{projects: []project{{Name: "Work", Color: "#ff0000"}}, tags: []tag{{Name: "urgent", Color: "#00ff00"}}}
 	m.openNew()
 
-	m.editor.focus = 1
+	m.editor.focus = 2
 	updated, _ := m.updateEditor(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)
 	if !m.editor.calendar {
@@ -455,7 +485,7 @@ func TestTaskEditorPickers(t *testing.T) {
 	}
 	m.editor.calendar = false
 
-	m.editor.focus = 2
+	m.editor.focus = 3
 	updated, _ = m.updateEditor(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)
 	if want := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff0000")).Render("Work"); !strings.Contains(m.taskChoiceView(40), want) {
@@ -465,11 +495,11 @@ func TestTaskEditorPickers(t *testing.T) {
 	m = updated.(model)
 	updated, _ = m.updateEditor(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)
-	if got := m.editor.fields[2].Value(); got != "Work" {
+	if got := m.editor.fields[3].Value(); got != "Work" {
 		t.Fatalf("project = %q", got)
 	}
 
-	m.editor.focus = 3
+	m.editor.focus = 4
 	updated, _ = m.updateEditor(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)
 	if want := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff00")).Render("urgent"); !strings.Contains(m.taskChoiceView(40), want) {
@@ -477,7 +507,7 @@ func TestTaskEditorPickers(t *testing.T) {
 	}
 	updated, _ = m.updateEditor(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)
-	if got := m.editor.fields[3].Value(); got != "urgent" {
+	if got := m.editor.fields[4].Value(); got != "urgent" {
 		t.Fatalf("tags = %q", got)
 	}
 }
