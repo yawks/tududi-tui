@@ -13,6 +13,7 @@ type appState struct {
 	Sort       string `json:"sort,omitempty"`
 	SortDesc   bool   `json:"sort_desc,omitempty"`
 	Priority   string `json:"priority,omitempty"`
+	Status     string `json:"status,omitempty"`
 	Tags       string `json:"tags,omitempty"`
 }
 
@@ -48,6 +49,9 @@ func loadState() (appState, error) {
 	}
 	if state.Priority != "" && state.Priority != "low" && state.Priority != "medium" && state.Priority != "high" {
 		state.Priority = ""
+	}
+	if state.Status != "" && statusName(state.Status) != state.Status {
+		state.Status = ""
 	}
 	return state, nil
 }

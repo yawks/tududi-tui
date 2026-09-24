@@ -535,12 +535,22 @@ func TestTaskEditorPickers(t *testing.T) {
 	m.editor.focus = 2
 	updated, _ := m.updateEditor(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)
+	m.editor.choiceIndex = 3
+	updated, _ = m.updateEditor(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+	if got := m.editor.fields[2].Value(); got != "Waiting" {
+		t.Fatalf("status = %q", got)
+	}
+
+	m.editor.focus = 3
+	updated, _ = m.updateEditor(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
 	if !m.editor.calendar {
 		t.Fatal("enter on due date should open the calendar")
 	}
 	m.editor.calendar = false
 
-	m.editor.focus = 3
+	m.editor.focus = 4
 	updated, _ = m.updateEditor(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)
 	if want := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff0000")).Render("Work"); !strings.Contains(m.taskChoiceView(40), want) {
@@ -550,11 +560,11 @@ func TestTaskEditorPickers(t *testing.T) {
 	m = updated.(model)
 	updated, _ = m.updateEditor(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)
-	if got := m.editor.fields[3].Value(); got != "Work" {
+	if got := m.editor.fields[4].Value(); got != "Work" {
 		t.Fatalf("project = %q", got)
 	}
 
-	m.editor.focus = 4
+	m.editor.focus = 5
 	updated, _ = m.updateEditor(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)
 	if want := lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff00")).Render("urgent"); !strings.Contains(m.taskChoiceView(40), want) {
@@ -562,8 +572,54 @@ func TestTaskEditorPickers(t *testing.T) {
 	}
 	updated, _ = m.updateEditor(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)
-	if got := m.editor.fields[4].Value(); got != "urgent" {
+	if got := m.editor.fields[5].Value(); got != "urgent" {
 		t.Fatalf("tags = %q", got)
+	}
+}
+
+func TestStatusFilterAndIcons(t *testing.T) {
+	m := model{page: pageAll, statusFilter: "waiting", tasks: []task{{Name: "new"}, {Name: "wait", Status: "waiting"}, {Name: "plan", Status: "planned"}, {Name: "done", Status: "done"}}}
+	if got := m.filteredTasks(); len(got) != 1 || got[0].Name != "wait" {
+		t.Fatalf("filtered tasks = %#v", got)
+	}
+	for _, task := range m.tasks {
+		if got := lipgloss.Width(strings.Split(m.taskListItem(task, 20, true), "\n")[0]); got != 18 {
+			t.Fatalf("%s title width = %d, want 18", statusName(task.Status), got)
+		}
+	}
+	if got := ansi.Strip(strings.Split(m.taskListItem(m.tasks[0], 20, false), "\n")[0]); strings.HasPrefix(got, " ") || strings.HasPrefix(got, "📝") {
+		t.Fatalf("not-started title has an icon: %q", got)
+	}
+}
+
+func TestTaskDetailShowsColoredProjectPriorityAndStatus(t *testing.T) {
+	m := model{projects: []project{{ID: 7, Name: "Work", Color: "#ff00ff"}}}
+	got := m.taskDetail(task{ProjectID: 7, Priority: "high", Status: "waiting"}, 40)
+	for _, want := range []string{
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#ff00ff")).Bold(true).Render("Work"),
+		lipgloss.NewStyle().Foreground(lipgloss.Color(priorityColor("high"))).Bold(true).Render("High"),
+		lipgloss.NewStyle().Foreground(lipgloss.Color(statusColor("waiting"))).Bold(true).Render("⏳ Waiting"),
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("task detail missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestCalendarKeepsStatusAndPlansDatedTask(t *testing.T) {
+	m := model{}
+	m.openNew()
+	m.editor.fields[2].SetValue("Waiting")
+	m.editor.date = time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC)
+	updated, _ := m.updateMiniCalendar(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+	if m.editor.fields[2].Value() != "Waiting" || m.editor.fields[3].Value() != "2026-09-25" {
+		t.Fatalf("fields = status %q, date %q", m.editor.fields[2].Value(), m.editor.fields[3].Value())
+	}
+	m.editor.fields[2].SetValue("Not started")
+	updated, _ = m.updateMiniCalendar(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := updated.(model).editor.fields[2].Value(); got != "Planned" {
+		t.Fatalf("dated task status = %q", got)
 	}
 }
 

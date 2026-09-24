@@ -108,7 +108,7 @@ func ident(uid string, id int) string {
 }
 
 func (c *client) saveTask(t task, create bool) error {
-	payload := map[string]any{"name": t.Name, "note": t.Note, "priority": priorityName(t.Priority), "status": "not_started"}
+	payload := map[string]any{"name": t.Name, "note": t.Note, "priority": priorityName(t.Priority), "status": statusName(t.Status)}
 	if t.ProjectID != 0 {
 		payload["project_id"] = t.ProjectID
 	}

@@ -1,6 +1,47 @@
 package main
 
-import "time"
+import (
+	"strings"
+	"time"
+)
+
+var taskStatuses = []string{"not_started", "planned", "in_progress", "waiting", "done", "cancelled"}
+
+func statusName(v any) string {
+	switch v := v.(type) {
+	case string:
+		v = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(v), " ", "_"))
+		if v == "completed" {
+			return "done"
+		}
+		for _, status := range taskStatuses {
+			if v == status {
+				return v
+			}
+		}
+	case float64:
+		if v >= 0 && v < 3 {
+			return []string{"not_started", "in_progress", "done"}[int(v)]
+		}
+	case int:
+		if v >= 0 && v < 3 {
+			return []string{"not_started", "in_progress", "done"}[v]
+		}
+	}
+	return "not_started"
+}
+
+func statusLabel(v any) string {
+	return strings.Title(strings.ReplaceAll(statusName(v), "_", " "))
+}
+
+func statusIcon(v any) string {
+	return map[string]string{"planned": "📅", "in_progress": "🚧", "waiting": "⏳", "done": "✓", "cancelled": "🚫"}[statusName(v)]
+}
+
+func statusColor(v any) string {
+	return map[string]string{"not_started": "#8b949e", "planned": "#3b82f6", "in_progress": "#f59e0b", "waiting": "#eab308", "done": "#22c55e", "cancelled": "#ef4444"}[statusName(v)]
+}
 
 type task struct {
 	ID         int      `json:"id"`
@@ -20,6 +61,7 @@ type task struct {
 func priorityName(v any) string {
 	switch v := v.(type) {
 	case string:
+		v = strings.ToLower(strings.TrimSpace(v))
 		if v != "" {
 			return v
 		}
@@ -35,28 +77,18 @@ func priorityName(v any) string {
 	return "medium"
 }
 
+func priorityLabel(v any) string { return strings.Title(priorityName(v)) }
+
+func priorityColor(v any) string {
+	return map[string]string{"low": "#3b82f6", "medium": "#f59e0b", "high": "#ef4444"}[priorityName(v)]
+}
+
 func (t task) completed() bool {
-	switch v := t.Status.(type) {
-	case string:
-		return v == "done" || v == "completed"
-	case float64:
-		return v == 2
-	default:
-		return false
-	}
+	return statusName(t.Status) == "done"
 }
 
 func (t task) inProgress() bool {
-	switch v := t.Status.(type) {
-	case string:
-		return v == "in_progress"
-	case float64:
-		return v == 1
-	case int:
-		return v == 1
-	default:
-		return false
-	}
+	return statusName(t.Status) == "in_progress"
 }
 
 func (t task) due() (time.Time, bool) {

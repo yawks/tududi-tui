@@ -112,3 +112,21 @@ func TestLoadRequestsAllTaskStatuses(t *testing.T) {
 		t.Fatalf("completed tasks = %#v", tasks)
 	}
 }
+
+func TestSaveTaskPreservesStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["status"] != "waiting" {
+			t.Fatalf("status = %v", body["status"])
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	if err := newClient(config{BaseURL: server.URL}).saveTask(task{UID: "task", Name: "wait", Status: "waiting"}, false); err != nil {
+		t.Fatal(err)
+	}
+}
