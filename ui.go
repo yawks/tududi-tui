@@ -25,10 +25,12 @@ const (
 	pageCalendar
 	pageTags
 	pageAll
+	pageDashboard
 )
 
 const (
-	sideAllFilters = iota
+	sideDashboard = iota
+	sideAllFilters
 	sideToday
 	sideUpcoming
 	sideUnplanned
@@ -39,8 +41,8 @@ const (
 )
 
 var labels = struct {
-	Today, Upcoming, Unplanned, Calendar, Tags, Projects, Help, Empty string
-}{"Today", "Upcoming", "Unplanned", "Calendar", "Tags", "Projects", "? help", "Nothing here"}
+	Dashboard, Today, Upcoming, Unplanned, Calendar, Tags, Projects, Help, Empty string
+}{"Dashboard", "Today", "Upcoming", "Unplanned", "Calendar", "Tags", "Projects", "? help", "Nothing here"}
 
 type loadedMsg struct {
 	tasks    []task
@@ -361,6 +363,11 @@ func (m *model) clamp() {
 func (m model) sideCount() int { return sideFirstProject + len(m.projects) }
 func (m *model) chooseSide() tea.Cmd {
 	m.cursor = 0
+	if m.side == sideDashboard {
+		m.page = pageDashboard
+		m.focusSide = false
+		return nil
+	}
 	if m.side == sideAllFilters {
 		m.page, m.lastFilter = pageAll, "all"
 		return m.saveStateCmd()
@@ -425,6 +432,9 @@ func (m model) filteredTasks() []task {
 }
 
 func (m model) currentLen() int {
+	if m.page == pageDashboard {
+		return 0
+	}
 	if m.page == pageTags {
 		return len(m.tags)
 	}
@@ -435,7 +445,7 @@ func (m model) currentLen() int {
 }
 func (m model) selectedTask() (task, bool) {
 	ts := m.filteredTasks()
-	if m.page == pageTags || m.page == pageCalendar || m.cursor >= len(ts) {
+	if m.page == pageDashboard || m.page == pageTags || m.page == pageCalendar || m.cursor >= len(ts) {
 		return task{}, false
 	}
 	return ts[m.cursor], true
@@ -918,10 +928,12 @@ func (m model) footerView() string {
 }
 
 func (m model) sidebarView() string {
-	items := []string{"All", "◷  " + labels.Today, "→  " + labels.Upcoming, "○  " + labels.Unplanned, "▦  " + labels.Calendar, "#  " + labels.Tags}
+	items := []string{"▤  " + labels.Dashboard, "All", "◷  " + labels.Today, "→  " + labels.Upcoming, "○  " + labels.Unplanned, "▦  " + labels.Calendar, "#  " + labels.Tags}
 	var b strings.Builder
 	for i, v := range items {
-		if i <= sideUnplanned {
+		if i == sideDashboard && m.page == pageDashboard {
+			v = "> " + v
+		} else if i >= sideAllFilters && i <= sideUnplanned {
 			active := i == sideAllFilters && m.page == pageAll || i >= sideToday && m.page == page(i-sideToday)
 			if active {
 				v = "> " + v
@@ -960,6 +972,9 @@ func (m model) sideLine(i int, s string) string {
 }
 
 func (m model) contentView(width int) string {
+	if m.page == pageDashboard {
+		return m.dashboardView(width)
+	}
 	if m.page == pageCalendar {
 		return m.calendarView(width)
 	}
@@ -1022,12 +1037,216 @@ func (m model) contentView(width int) string {
 	return b.String()
 }
 
+type dashboardStats struct {
+	total, inProgress, active, dueToday, overdue, completed int
+	unplanned, ageDays, agedTasks                           int
+	priorities                                              [3]int
+	nextWeek                                                [7]int
+	tags                                                    map[string]int
+}
+
+func (m model) dashboardStats(now time.Time) dashboardStats {
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	end := start.AddDate(0, 0, 1)
+	stats := dashboardStats{tags: map[string]int{}}
+	for _, task := range m.tasks {
+		if !m.matchesSelectedProject(task) {
+			continue
+		}
+		stats.total++
+		if task.completed() {
+			stats.completed++
+			continue
+		}
+		stats.active++
+		stats.priorities[map[string]int{"low": 0, "medium": 1, "high": 2}[priorityName(task.Priority)]]++
+		if created, ok := task.created(); ok && created.Before(now) {
+			stats.ageDays += int(now.Sub(created).Hours() / 24)
+			stats.agedTasks++
+		}
+		for _, tag := range task.Tags {
+			stats.tags[tag.Name]++
+		}
+		if task.inProgress() {
+			stats.inProgress++
+		}
+		if due, ok := task.due(); ok {
+			due = due.In(now.Location())
+			if !due.Before(start) && due.Before(end) {
+				stats.dueToday++
+			} else if due.Before(start) {
+				stats.overdue++
+			} else if day := int(due.Sub(start).Hours()/24) - 1; day < len(stats.nextWeek) {
+				stats.nextWeek[day]++
+			}
+		} else {
+			stats.unplanned++
+		}
+	}
+	return stats
+}
+
+func (m model) dashboardView(width int) string {
+	stats := m.dashboardStats(time.Now())
+	heading := labels.Dashboard
+	if p := m.selectedProject(); p != nil {
+		heading += "  ·  " + p.Name
+	} else {
+		heading += "  ·  All projects"
+	}
+	cards := []struct {
+		label string
+		value int
+		color string
+	}{
+		{"Total", stats.total, "#3b82f6"},
+		{"In Progress", stats.inProgress, "#f59e0b"},
+		{"Active", stats.active, "#06b6d4"},
+		{"Due Today", stats.dueToday, "#a855f7"},
+		{"Overdue", stats.overdue, "#ef4444"},
+		{"Completed", stats.completed, "#22c55e"},
+	}
+	columns := 3
+	cardWidth := max(12, (width-(columns-1)*2)/columns)
+	rows := make([]string, 0, (len(cards)+columns-1)/columns)
+	for i := 0; i < len(cards); i += columns {
+		row := make([]string, 0, columns)
+		for _, card := range cards[i:min(i+columns, len(cards))] {
+			style := lipgloss.NewStyle().Width(cardWidth-4).Padding(0, 1).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(card.color))
+			value := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(card.color)).Render(strconv.Itoa(card.value))
+			row = append(row, style.Render(value+"\n"+card.label))
+		}
+		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, row...))
+	}
+	return titleStyle.Render(heading) + "\n\n" + strings.Join(rows, "\n") + "\n" + m.dashboardCharts(stats, width)
+}
+
+func (m model) dashboardCharts(stats dashboardStats, width int) string {
+	percent := 0
+	if stats.total > 0 {
+		percent = stats.completed * 100 / stats.total
+	}
+	age := "n/a"
+	if stats.agedTasks > 0 {
+		age = fmt.Sprintf("%dd", stats.ageDays/stats.agedTasks)
+	}
+
+	type tagCount struct {
+		name  string
+		count int
+	}
+	topTags := make([]tagCount, 0, len(stats.tags))
+	for name, count := range stats.tags {
+		topTags = append(topTags, tagCount{name, count})
+	}
+	sort.Slice(topTags, func(i, j int) bool {
+		return topTags[i].count > topTags[j].count || topTags[i].count == topTags[j].count && topTags[i].name < topTags[j].name
+	})
+	topTags = topTags[:min(5, len(topTags))]
+	panelWidth := width
+	if width >= 90 {
+		panelWidth = (width - 1) / 2
+	}
+	innerWidth := panelWidth - 4
+	overview := bar(percent, max(8, innerWidth-17), "#22c55e") + fmt.Sprintf(" %3d%% · %d/%d\n", percent, stats.completed, stats.total) +
+		fmt.Sprintf("Unplanned%*d\nAverage age%*s", max(1, innerWidth-9), stats.unplanned, max(1, innerWidth-11), age)
+
+	priorityNames := []string{"Low", "Medium", "High"}
+	priorityColors := []string{"#3b82f6", "#f59e0b", "#ef4444"}
+	maxPriority := max(stats.priorities[0], max(stats.priorities[1], stats.priorities[2]))
+	priorityLines := make([]string, 3)
+	for i, count := range stats.priorities {
+		priorityLines[i] = fmt.Sprintf("%-7s %s %d", priorityNames[i], countBar(count, maxPriority, max(4, innerWidth-12), priorityColors[i]), count)
+	}
+
+	maxTag := 0
+	for _, tag := range topTags {
+		maxTag = max(maxTag, tag.count)
+	}
+	tagLines := make([]string, len(topTags))
+	for i, tag := range topTags {
+		name := ansi.Truncate("#"+tag.name, 16, "…")
+		tagLines[i] = fmt.Sprintf("%-16s %s %d", name, countBar(tag.count, maxTag, max(3, innerWidth-21), "#a855f7"), tag.count)
+	}
+	if len(tagLines) == 0 {
+		tagLines = []string{dim.Render("No tags")}
+	}
+
+	first := lipgloss.JoinHorizontal(lipgloss.Top,
+		dashboardPanel("Completion & planning", overview, panelWidth),
+		dashboardPanel("Active by priority", strings.Join(priorityLines, "\n"), panelWidth),
+	)
+	second := lipgloss.JoinHorizontal(lipgloss.Top,
+		dashboardPanel("Next 7 days", weekChart(stats.nextWeek), panelWidth),
+		dashboardPanel("Top tags", strings.Join(tagLines, "\n"), panelWidth),
+	)
+	if width < 90 {
+		first = lipgloss.JoinVertical(lipgloss.Left,
+			dashboardPanel("Completion & planning", overview, panelWidth),
+			dashboardPanel("Active by priority", strings.Join(priorityLines, "\n"), panelWidth),
+		)
+		second = lipgloss.JoinVertical(lipgloss.Left,
+			dashboardPanel("Next 7 days", weekChart(stats.nextWeek), panelWidth),
+			dashboardPanel("Top tags", strings.Join(tagLines, "\n"), panelWidth),
+		)
+	}
+	return first + "\n" + second
+}
+
+func bar(percent, width int, color string) string {
+	filled := percent * width / 100
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(strings.Repeat("█", filled)) + dim.Render(strings.Repeat("░", width-filled))
+}
+
+func countBar(value, largest, width int, color string) string {
+	filled := 0
+	if largest > 0 {
+		filled = value * width / largest
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(strings.Repeat("█", filled)) + dim.Render(strings.Repeat("░", width-filled))
+}
+
+func dashboardPanel(title, content string, width int) string {
+	return lipgloss.NewStyle().Width(width-4).Padding(0, 1).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#30363d")).Render(titleStyle.Render(title) + "\n" + content)
+}
+
+func weekChart(counts [7]int) string {
+	maxCount := 0
+	for _, count := range counts {
+		maxCount = max(maxCount, count)
+	}
+	var lines []string
+	for row := 2; row > 0; row-- {
+		var cells []string
+		for _, count := range counts {
+			filled := maxCount > 0 && count*2 >= row*maxCount
+			cell := " "
+			if filled {
+				cell = lipgloss.NewStyle().Foreground(lipgloss.Color("#a855f7")).Render("█")
+			}
+			cells = append(cells, " "+cell+" ")
+		}
+		lines = append(lines, strings.Join(cells, " "))
+	}
+	values, days := make([]string, 7), make([]string, 7)
+	for i, count := range counts {
+		values[i] = fmt.Sprintf("%2d ", count)
+		days[i] = time.Now().AddDate(0, 0, i+1).Format("Mon")
+	}
+	return strings.Join(lines, "\n") + "\n" + strings.Join(values, " ") + "\n" + strings.Join(days, " ")
+}
+
 func (m model) taskListItem(t task, width int, active bool) string {
 	mark := "○"
 	if t.completed() {
 		mark = "✓"
 	}
 	title := mark + " " + truncate(t.Name, width-4)
+	if t.completed() {
+		if !active {
+			title = lipgloss.NewStyle().Foreground(muted).Faint(true).Strikethrough(true).Render(title)
+		}
+	}
 	var metadata []string
 	late := ""
 	for _, tag := range t.Tags {
@@ -1066,6 +1285,9 @@ func (m model) taskListItem(t task, width int, active bool) string {
 	}
 	item := title + "\n" + second
 	if active {
+		if t.completed() {
+			return selected.Width(width-2).Faint(true).Strikethrough(true).Render(title) + "\n" + selected.Width(width-2).Faint(true).Render(second)
+		}
 		return selected.Width(width - 2).Render(item)
 	}
 	return item

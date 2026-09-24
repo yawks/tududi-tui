@@ -52,6 +52,57 @@ func TestTaskViewsAndCompletedToggle(t *testing.T) {
 	}
 }
 
+func TestDashboardStatsUseSelectedProject(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	m := model{
+		selectedProjectUID: "one",
+		projects:           []project{{ID: 1, UID: "one"}},
+		tasks: []task{
+			{ProjectID: 1, Status: "in_progress", Priority: 2, DueDate: "2026-09-24", CreatedAt: "2026-09-20T12:00:00Z", Tags: []tag{{Name: "work"}}},
+			{ProjectID: 1, Status: "not_started", DueDate: "2026-09-23"},
+			{ProjectID: 1, Status: "done", DueDate: "2026-09-24"},
+			{ProjectID: 2, Status: "not_started"},
+		},
+	}
+	got := m.dashboardStats(now)
+	if got.total != 3 || got.inProgress != 1 || got.active != 2 || got.dueToday != 1 || got.overdue != 1 || got.completed != 1 {
+		t.Fatalf("unexpected totals: %+v", got)
+	}
+	if got.priorities != [3]int{0, 1, 1} || got.ageDays != 4 || got.tags["work"] != 1 {
+		t.Fatalf("dashboard breakdowns = %+v", got)
+	}
+}
+
+func TestDashboardStatsCharts(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	m := model{tasks: []task{
+		{Status: "not_started"},
+		{Status: "not_started", DueDate: "2026-09-25", Tags: []tag{{Name: "work"}}},
+		{Status: "done"},
+	}}
+	stats := m.dashboardStats(now)
+	if stats.unplanned != 1 || stats.nextWeek[0] != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	view := m.dashboardCharts(stats, 100)
+	for _, want := range []string{"Completion & planning", "Active by priority", "Unplanned", "Fri", "#work"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("dashboard charts missing %q: %q", want, view)
+		}
+	}
+}
+
+func TestDashboardFitsCommonTerminal(t *testing.T) {
+	m := model{page: pageDashboard, width: 160, height: 30}
+	for i := 0; i < 8; i++ {
+		m.tasks = append(m.tasks, task{Status: "not_started", Priority: i % 3, DueDate: time.Now().AddDate(0, 0, i).Format("2006-01-02"), Tags: []tag{{Name: fmt.Sprintf("tag-%d", i)}}})
+	}
+	view := m.View()
+	if lipgloss.Width(view) > m.width || lipgloss.Height(view) > m.height {
+		t.Fatalf("dashboard is %dx%d, terminal is %dx%d", lipgloss.Width(view), lipgloss.Height(view), m.width, m.height)
+	}
+}
+
 func TestShiftTabFromMarkdownEditor(t *testing.T) {
 	m := model{page: pageToday}
 	m.openNew()
@@ -85,6 +136,23 @@ func TestLateTagIsShownOnlyForOverdueActiveTasks(t *testing.T) {
 	}
 	if got := m.taskListItem(task{Name: "done", DueDate: yesterday, Status: "done"}, 60, false); strings.Contains(got, "⚠  late") {
 		t.Fatalf("completed task marked late: %q", got)
+	}
+}
+
+func TestCompletedTaskTitleIsStruckAndDimmed(t *testing.T) {
+	got := (model{}).taskListItem(task{Name: "finished", Status: "done"}, 60, false)
+	want := lipgloss.NewStyle().Foreground(muted).Faint(true).Strikethrough(true).Render("✓ finished")
+	if !strings.Contains(got, want) {
+		t.Fatalf("completed task is not dimmed and struck: %q", got)
+	}
+}
+
+func TestSelectedCompletedTaskKeepsFullHighlight(t *testing.T) {
+	got := (model{}).taskListItem(task{Name: "finished", Status: "done"}, 60, true)
+	for i, line := range strings.Split(got, "\n") {
+		if lipgloss.Width(line) != 58 {
+			t.Fatalf("line %d width = %d, want 58: %q", i, lipgloss.Width(line), line)
+		}
 	}
 }
 

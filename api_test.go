@@ -85,3 +85,30 @@ func TestToggleTaskUsesTaskPatch(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLoadRequestsAllTaskStatuses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tasks":
+			if r.URL.Query().Get("type") != "all" || r.URL.Query().Get("status") != "all" {
+				t.Fatalf("task query = %q", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"tasks":[{"name":"done","status":2}]}`))
+		case "/api/projects":
+			_, _ = w.Write([]byte(`[]`))
+		case "/api/tags":
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			t.Fatalf("unexpected request %s", r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	tasks, _, _, err := newClient(config{BaseURL: server.URL}).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || !tasks[0].completed() {
+		t.Fatalf("completed tasks = %#v", tasks)
+	}
+}

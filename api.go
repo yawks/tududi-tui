@@ -58,7 +58,7 @@ func (c *client) do(method, path string, body any, out any) error {
 
 func (c *client) load() ([]task, []project, []tag, error) {
 	var raw json.RawMessage
-	if err := c.do(http.MethodGet, "tasks?type=all", nil, &raw); err != nil {
+	if err := c.do(http.MethodGet, "tasks?type=all&status=all", nil, &raw); err != nil {
 		return nil, nil, nil, err
 	}
 	var tasks []task
