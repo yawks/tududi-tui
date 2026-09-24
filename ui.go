@@ -673,7 +673,7 @@ func (m model) updateEditor(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "enter", "ctrl+p":
-		if e.kind == editTask {
+		if e.kind == editTask && e.focus < len(e.fields) {
 			switch e.focus {
 			case 1:
 				e.choice, e.choiceIndex = 3, max(0, slices.Index([]string{"low", "medium", "high"}, priorityName(e.fields[1].Value())))
@@ -709,6 +709,9 @@ func (m model) updateEditor(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "tab", "shift+tab", "up", "down":
 		if e.focus == len(e.fields) && (key.String() == "up" || key.String() == "down") {
+			if key.String() == "down" && e.note.Line() == e.note.LineCount()-1 {
+				return m, nil
+			}
 			break
 		}
 		if e.focus == len(e.fields) {
@@ -737,6 +740,17 @@ func (m model) updateEditor(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			e.fields[e.focus].Focus()
 		}
 		return m, nil
+	case "pgup", "pgdown":
+		if e.focus == len(e.fields) {
+			move := tea.KeyUp
+			if key.String() == "pgdown" {
+				move = tea.KeyDown
+			}
+			for range max(1, e.note.Height()-1) {
+				e.note, _ = e.note.Update(tea.KeyMsg{Type: move})
+			}
+			return m, nil
+		}
 	}
 	var cmd tea.Cmd
 	if e.focus == len(e.fields) {
@@ -1131,7 +1145,7 @@ func (m model) View() string {
 	if rightW > 0 {
 		right := ""
 		if m.editor != nil && m.editor.kind == editTask {
-			right = m.editorContent(rightW-4, m.height-5)
+			right = m.editorContent(rightW-4, m.height-3)
 		} else if !m.focusSide {
 			if t, ok := m.selectedTask(); ok {
 				right = m.taskDetail(t, rightW-4)
@@ -1577,7 +1591,7 @@ func (m model) taskDetail(t task, width int) string {
 	}
 	if t.Note != "" {
 		b.WriteString(dim.Render(strings.Repeat("─", max(1, width))) + "\n")
-		rendered, err := glamour.Render(t.Note, "dark")
+		rendered, err := glamour.Render(t.Note, "light")
 		if err == nil {
 			b.WriteString(rendered)
 		} else {
@@ -1853,8 +1867,9 @@ func (m model) editorContent(width, height int) string {
 	}
 	button := lipgloss.NewStyle().Background(lipgloss.Color("#1f6feb")).Foreground(lipgloss.Color("#ffffff")).Bold(true).Padding(0, 1)
 	buttons := button.Render("Save  ctrl+s") + "  " + button.Render("Cancel  esc")
-	body := lipgloss.NewStyle().Height(max(1, height-1)).MaxHeight(max(1, height-1)).Render(b.String())
-	return body + "\n" + buttons
+	bodyHeight := max(1, height-1)
+	body := lipgloss.NewStyle().Height(bodyHeight).MaxHeight(bodyHeight).Render(b.String())
+	return body + "\n" + lipgloss.NewStyle().Width(width).Align(lipgloss.Right).Render(buttons)
 }
 
 func (m model) taskChoiceView(width int) string {

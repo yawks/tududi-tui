@@ -117,6 +117,63 @@ func TestShiftTabFromMarkdownEditor(t *testing.T) {
 	}
 }
 
+func TestEnterAddsLineToTaskDescription(t *testing.T) {
+	m := model{page: pageToday}
+	m.openNew()
+	m.editor.focus = len(m.editor.fields)
+	m.editor.note.Focus()
+	m.editor.note.SetValue("first line")
+
+	updated, _ := m.updateEditor(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := updated.(model).editor.note.Value(); got != "first line\n" {
+		t.Fatalf("description = %q, want a new line", got)
+	}
+}
+
+func TestPageUpScrollsTaskDescription(t *testing.T) {
+	m := model{page: pageToday}
+	m.openNew()
+	m.editor.focus = len(m.editor.fields)
+	m.editor.note.Focus()
+	m.editor.note.SetValue(strings.Repeat("line\n", 20))
+	lastLine := m.editor.note.Line()
+
+	updated, _ := m.updateEditor(tea.KeyMsg{Type: tea.KeyPgUp})
+	if got := updated.(model).editor.note.Line(); got >= lastLine {
+		t.Fatalf("cursor line = %d, want before %d", got, lastLine)
+	}
+}
+
+func TestDownStopsAtEndOfTaskDescription(t *testing.T) {
+	m := model{page: pageToday}
+	m.openNew()
+	m.editor.focus = len(m.editor.fields)
+	m.editor.note.Focus()
+	m.editor.note.SetValue("first\nlast")
+	before := m.editor.note.LineInfo()
+
+	updated, _ := m.updateEditor(tea.KeyMsg{Type: tea.KeyDown})
+	after := updated.(model).editor.note.LineInfo()
+	if after != before {
+		t.Fatalf("cursor moved past the last line: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestDownDoesNotEnterWrappedContinuationOfLastLine(t *testing.T) {
+	m := model{page: pageToday}
+	m.openNew()
+	m.editor.focus = len(m.editor.fields)
+	m.editor.note.Focus()
+	m.editor.note.SetWidth(12)
+	m.editor.note.SetValue("a final line that wraps")
+	before := m.editor.note.LineInfo()
+
+	updated, _ := m.updateEditor(tea.KeyMsg{Type: tea.KeyDown})
+	if after := updated.(model).editor.note.LineInfo(); after != before {
+		t.Fatalf("cursor entered wrapped continuation: before=%+v after=%+v", before, after)
+	}
+}
+
 func TestTaskListItemHasTitleMetadataAndDueDate(t *testing.T) {
 	task := task{
 		Name:    "Ship terminal client",
@@ -637,6 +694,10 @@ func TestLongTaskDescriptionKeepsEditorButtonsVisible(t *testing.T) {
 	}
 	if got := lipgloss.Height(view); got > m.height {
 		t.Fatalf("view height = %d, terminal = %d", got, m.height)
+	}
+	actions := strings.Split(ansi.Strip(m.editorContent(60, 25)), "\n")
+	if last := actions[len(actions)-1]; !strings.HasPrefix(last, " ") || !strings.Contains(last, "Save  ctrl+s") {
+		t.Fatalf("editor actions are not bottom-right aligned: %q", last)
 	}
 }
 
