@@ -44,18 +44,20 @@ func statusColor(v any) string {
 }
 
 type task struct {
-	ID         int      `json:"id"`
-	UID        string   `json:"uid"`
-	Name       string   `json:"name"`
-	Note       string   `json:"note"`
-	Status     any      `json:"status"`
-	Priority   any      `json:"priority"`
-	DueDate    string   `json:"due_date"`
-	CreatedAt  string   `json:"created_at"`
-	ProjectID  int      `json:"project_id"`
-	ProjectUID string   `json:"project_uid"`
-	Project    *project `json:"Project"`
-	Tags       []tag    `json:"tags"`
+	ID          int      `json:"id"`
+	UID         string   `json:"uid"`
+	Name        string   `json:"name"`
+	Note        string   `json:"note"`
+	Status      any      `json:"status"`
+	Priority    any      `json:"priority"`
+	DueDate     string   `json:"due_date"`
+	CreatedAt   string   `json:"created_at"`
+	UpdatedAt   string   `json:"updated_at"`
+	CompletedAt string   `json:"completed_at"`
+	ProjectID   int      `json:"project_id"`
+	ProjectUID  string   `json:"project_uid"`
+	Project     *project `json:"Project"`
+	Tags        []tag    `json:"tags"`
 }
 
 func priorityName(v any) string {
@@ -105,6 +107,15 @@ func (t task) due() (time.Time, bool) {
 func (t task) created() (time.Time, bool) {
 	d, err := time.Parse(time.RFC3339, t.CreatedAt)
 	return d, err == nil
+}
+
+func (t task) completedDate() (time.Time, bool) {
+	for _, value := range []string{t.CompletedAt, t.UpdatedAt} {
+		if d, err := time.Parse(time.RFC3339, value); err == nil {
+			return d, true
+		}
+	}
+	return time.Time{}, false
 }
 
 type project struct {

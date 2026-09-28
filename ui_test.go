@@ -53,6 +53,25 @@ func TestTaskViewsAndCompletedToggle(t *testing.T) {
 	}
 }
 
+func TestDonePageFiltersCompletionDateAndDoesNotStrikeTitles(t *testing.T) {
+	now := time.Now()
+	m := model{
+		page: pageDone, doneFrom: dayStart(now), doneTo: dayStart(now).AddDate(0, 0, 1),
+		tasks: []task{
+			{Name: "today", Status: "done", CompletedAt: now.Format(time.RFC3339)},
+			{Name: "yesterday", Status: "done", CompletedAt: now.AddDate(0, 0, -1).Format(time.RFC3339)},
+			{Name: "active", Status: "not_started", UpdatedAt: now.Format(time.RFC3339)},
+		},
+	}
+	got := m.filteredTasks()
+	if len(got) != 1 || got[0].Name != "today" {
+		t.Fatalf("Done tasks = %#v", got)
+	}
+	if view := m.taskListItem(got[0], 60, false); strings.Contains(view, "\x1b[9m") {
+		t.Fatalf("Done title is struck: %q", view)
+	}
+}
+
 func TestDashboardStatsUseSelectedProject(t *testing.T) {
 	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	m := model{
@@ -114,6 +133,14 @@ func TestShiftTabFromMarkdownEditor(t *testing.T) {
 	got := updated.(model)
 	if want := len(got.editor.fields) - 1; got.editor.focus != want {
 		t.Fatalf("focus = %d, want %d", got.editor.focus, want)
+	}
+}
+
+func TestShiftTabSwitchesMainFocus(t *testing.T) {
+	m := model{focusSide: false}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if !updated.(model).focusSide {
+		t.Fatal("shift+tab should switch focus back to the sidebar")
 	}
 }
 

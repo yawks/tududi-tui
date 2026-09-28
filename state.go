@@ -41,7 +41,7 @@ func loadState() (appState, error) {
 	if err := json.Unmarshal(b, &state); err != nil {
 		return appState{Filter: "today"}, err
 	}
-	if state.Filter != "all" && state.Filter != "today" && state.Filter != "upcoming" && state.Filter != "unplanned" && state.Filter != "dashboard" {
+	if state.Filter != "all" && state.Filter != "today" && state.Filter != "upcoming" && state.Filter != "unplanned" && state.Filter != "done" && state.Filter != "dashboard" {
 		state.Filter = "today"
 	}
 	if state.Sort != "" && state.Sort != "date" && state.Sort != "name" && state.Sort != "priority" && state.Sort != "tag" {

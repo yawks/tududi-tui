@@ -23,6 +23,7 @@ const (
 	pageToday page = iota
 	pageUpcoming
 	pageUnplanned
+	pageDone
 	pageCalendar
 	pageTags
 	pageAll
@@ -35,6 +36,7 @@ const (
 	sideToday
 	sideUpcoming
 	sideUnplanned
+	sideDone
 	sideCalendar
 	sideTags
 	sideAllProjects
@@ -42,8 +44,8 @@ const (
 )
 
 var labels = struct {
-	Dashboard, Today, Upcoming, Unplanned, Calendar, Tags, Projects, Help, Empty string
-}{"Dashboard", "Today", "Upcoming", "Unplanned", "Calendar", "Tags", "Projects", "? help", "Nothing here"}
+	Dashboard, Today, Upcoming, Unplanned, Done, Calendar, Tags, Projects, Help, Empty string
+}{"Dashboard", "Today", "Upcoming", "Unplanned", "Done", "Calendar", "Tags", "Projects", "? help", "Nothing here"}
 
 type loadedMsg struct {
 	tasks    []task
@@ -120,6 +122,9 @@ type model struct {
 	priorityFilter     string
 	statusFilter       string
 	tagFilters         map[string]bool
+	doneFrom, doneTo   time.Time
+	doneDate           time.Time
+	donePicking        int
 }
 
 var (
@@ -135,13 +140,14 @@ func newModel(api *client, state appState) model {
 	now := time.Now()
 	p := pageFromFilter(state.Filter)
 	side := sideAllFilters
-	if p <= pageUnplanned {
+	if p <= pageDone {
 		side = int(p) + sideToday
 	} else if p == pageDashboard {
 		side = sideDashboard
 	}
 	tagFilters := selectedNames(state.Tags)
-	return model{api: api, page: p, side: side, selectedProjectUID: state.ProjectUID, lastFilter: state.Filter, focusSide: true, loading: true, calDate: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()), sortBy: state.Sort, sortDesc: state.SortDesc, priorityFilter: state.Priority, statusFilter: state.Status, tagFilters: tagFilters}
+	today := dayStart(now)
+	return model{api: api, page: p, side: side, selectedProjectUID: state.ProjectUID, lastFilter: state.Filter, focusSide: true, loading: true, showCompleted: p == pageDone, calDate: today, doneFrom: today, doneTo: today.AddDate(0, 0, 1), sortBy: state.Sort, sortDesc: state.SortDesc, priorityFilter: state.Priority, statusFilter: state.Status, tagFilters: tagFilters}
 }
 
 func pageFromFilter(filter string) page {
@@ -150,6 +156,8 @@ func pageFromFilter(filter string) page {
 		return pageUpcoming
 	case "unplanned":
 		return pageUnplanned
+	case "done":
+		return pageDone
 	case "all":
 		return pageAll
 	case "dashboard":
@@ -161,8 +169,8 @@ func pageFromFilter(filter string) page {
 
 func (m model) persistedState() appState {
 	filter := m.lastFilter
-	if filter == "" && m.page <= pageUnplanned {
-		filter = []string{"today", "upcoming", "unplanned"}[m.page]
+	if filter == "" && m.page <= pageDone {
+		filter = []string{"today", "upcoming", "unplanned", "done"}[m.page]
 	}
 	if filter == "" {
 		filter = "today"
@@ -247,7 +255,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.menu, m.menuIndex = "sort", max(0, slices.Index([]string{"date", "name", "priority", "tag"}, m.sortBy))
 	case "f":
 		m.menu, m.menuIndex = "filter", 0
-	case "tab":
+	case "tab", "shift+tab":
 		m.focusSide = !m.focusSide
 	case "h":
 		m.showCompleted = !m.showCompleted
@@ -403,9 +411,13 @@ func (m *model) chooseSide() tea.Cmd {
 		m.page, m.lastFilter = pageAll, "all"
 		return m.saveStateCmd()
 	}
-	if m.side >= sideToday && m.side <= sideUnplanned {
+	if m.side >= sideToday && m.side <= sideDone {
 		m.page = page(m.side - sideToday)
-		m.lastFilter = []string{"today", "upcoming", "unplanned"}[m.side-sideToday]
+		m.lastFilter = []string{"today", "upcoming", "unplanned", "done"}[m.side-sideToday]
+		if m.page == pageDone {
+			m.showCompleted = true
+			m.menu, m.menuIndex = "done-period", 0
+		}
 		return m.saveStateCmd()
 	}
 	if m.side == sideCalendar || m.side == sideTags {
@@ -429,7 +441,11 @@ func (m model) filteredTasks() []task {
 	end := start.AddDate(0, 0, 1)
 	var out []task
 	for _, t := range m.tasks {
-		if m.statusFilter == "" && t.completed() != m.showCompleted || m.statusFilter != "" && statusName(t.Status) != m.statusFilter {
+		if m.page == pageDone {
+			if !t.completed() {
+				continue
+			}
+		} else if m.statusFilter == "" && t.completed() != m.showCompleted || m.statusFilter != "" && statusName(t.Status) != m.statusFilter {
 			continue
 		}
 		if !m.matchesSelectedProject(t) {
@@ -456,6 +472,9 @@ func (m model) filteredTasks() []task {
 			match = hasDue && !due.Before(end)
 		case pageUnplanned:
 			match = !hasDue
+		case pageDone:
+			completed, ok := t.completedDate()
+			match = ok && !completed.Before(m.doneFrom) && completed.Before(m.doneTo)
 		default:
 			match = true
 		}
@@ -834,6 +853,67 @@ func selectedNames(value string) map[string]bool {
 }
 
 func (m model) updateMenu(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.menu == "done-calendar" {
+		switch key.String() {
+		case "esc":
+			m.menu, m.donePicking = "done-period", 0
+		case "left", "h":
+			m.doneDate = m.doneDate.AddDate(0, 0, -1)
+		case "right", "l":
+			m.doneDate = m.doneDate.AddDate(0, 0, 1)
+		case "up", "k":
+			m.doneDate = m.doneDate.AddDate(0, 0, -7)
+		case "down", "j":
+			m.doneDate = m.doneDate.AddDate(0, 0, 7)
+		case "[":
+			m.doneDate = m.doneDate.AddDate(0, -1, 0)
+		case "]":
+			m.doneDate = m.doneDate.AddDate(0, 1, 0)
+		case "enter", " ":
+			if m.donePicking == 0 {
+				m.doneFrom, m.donePicking = dayStart(m.doneDate), 1
+			} else {
+				m.doneTo = dayStart(m.doneDate).AddDate(0, 0, 1)
+				if m.doneTo.Before(m.doneFrom) {
+					m.doneFrom, m.doneTo = m.doneTo.AddDate(0, 0, -1), m.doneFrom.AddDate(0, 0, 1)
+				}
+				m.menu, m.donePicking, m.cursor = "", 0, 0
+			}
+		}
+		return m, nil
+	}
+	if m.menu == "done-period" {
+		if key.String() == "esc" {
+			m.menu = ""
+			return m, nil
+		}
+		if key.String() == "up" || key.String() == "k" {
+			m.menuIndex = (m.menuIndex + 4) % 5
+		}
+		if key.String() == "down" || key.String() == "j" {
+			m.menuIndex = (m.menuIndex + 1) % 5
+		}
+		if key.String() == "enter" || key.String() == " " {
+			now := dayStart(time.Now())
+			weekStart := now.AddDate(0, 0, -(int(now.Weekday())+6)%7)
+			monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+			switch m.menuIndex {
+			case 0:
+				m.doneFrom, m.doneTo = now, now.AddDate(0, 0, 1)
+			case 1:
+				m.doneFrom, m.doneTo = now.AddDate(0, 0, -1), now
+			case 2:
+				m.doneFrom, m.doneTo = weekStart.AddDate(0, 0, -7), weekStart
+			case 3:
+				m.doneFrom, m.doneTo = monthStart.AddDate(0, -1, 0), monthStart
+			case 4:
+				m.menu, m.doneDate, m.donePicking = "done-calendar", now, 0
+				return m, nil
+			}
+			m.menu, m.cursor = "", 0
+		}
+		return m, nil
+	}
 	count := 4
 	if m.menu == "sort-direction" {
 		count = 2
@@ -889,6 +969,24 @@ func (m model) updateMenu(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) menuView() string {
+	if m.menu == "done-calendar" {
+		prompt := "Choose start date"
+		if m.donePicking == 1 {
+			prompt = "Choose end date"
+		}
+		return titleStyle.Render(prompt) + "\n\n" + calendarGrid(m.doneDate) + "\n\n" + dim.Render("arrows move  [ ] month  enter choose  esc back")
+	}
+	if m.menu == "done-period" {
+		var lines []string
+		for i, value := range []string{"Today", "Yesterday", "Last week", "Last month", "Custom period"} {
+			mark := "  "
+			if i == m.menuIndex {
+				mark = "> "
+			}
+			lines = append(lines, mark+value)
+		}
+		return titleStyle.Render("Done period") + "\n\n" + strings.Join(lines, "\n") + "\n\n" + dim.Render("enter choose  esc close")
+	}
 	if m.menu == "sort" {
 		var lines []string
 		for i, value := range []string{"Due date", "Name", "Priority", "Tag"} {
@@ -1188,12 +1286,12 @@ func (m model) footerView() string {
 }
 
 func (m model) sidebarView() string {
-	items := []string{"▤  " + labels.Dashboard, "All", "◷  " + labels.Today, "→  " + labels.Upcoming, "○  " + labels.Unplanned, "▦  " + labels.Calendar, "#  " + labels.Tags}
+	items := []string{"▤  " + labels.Dashboard, "All", "◷  " + labels.Today, "→  " + labels.Upcoming, "○  " + labels.Unplanned, "✓  " + labels.Done, "▦  " + labels.Calendar, "#  " + labels.Tags}
 	var b strings.Builder
 	for i, v := range items {
 		if i == sideDashboard && m.page == pageDashboard {
 			v = "> " + v
-		} else if i >= sideAllFilters && i <= sideUnplanned {
+		} else if i >= sideAllFilters && i <= sideDone {
 			active := i == sideAllFilters && m.page == pageAll || i >= sideToday && m.page == page(i-sideToday)
 			if active {
 				v = "> " + v
@@ -1243,8 +1341,8 @@ func (m model) contentView(width int) string {
 	}
 	ts := m.filteredTasks()
 	heading := "All tasks"
-	if m.page <= pageUnplanned {
-		heading = []string{labels.Today, labels.Upcoming, labels.Unplanned}[m.page]
+	if m.page <= pageDone {
+		heading = []string{labels.Today, labels.Upcoming, labels.Unplanned, labels.Done}[m.page]
 	}
 	heading = fmt.Sprintf("%s (%d)", heading, len(ts))
 	var b strings.Builder
@@ -1256,7 +1354,7 @@ func (m model) contentView(width int) string {
 		}
 		b.WriteString(dim.Render("  ·  ") + style.Render(p.Name))
 	}
-	if m.showCompleted {
+	if m.showCompleted && m.page != pageDone {
 		b.WriteString(dim.Render("  · completed only"))
 	}
 	if m.sortBy != "" {
@@ -1509,7 +1607,7 @@ func (m model) taskListItem(t task, width int, active bool) string {
 		prefix += " "
 	}
 	title := prefix + truncate(t.Name, width-2-lipgloss.Width(prefix))
-	if t.completed() {
+	if t.completed() && m.page != pageDone {
 		if !active {
 			title = lipgloss.NewStyle().Foreground(muted).Faint(true).Strikethrough(true).Render(title)
 		}
@@ -1559,7 +1657,7 @@ func (m model) taskListItem(t task, width int, active bool) string {
 	second += strings.Repeat(" ", max(1, width-2-lipgloss.Width(second)-lipgloss.Width(priority))) + priority
 	item := title + "\n" + second
 	if active {
-		if t.completed() {
+		if t.completed() && m.page != pageDone {
 			return selected.Width(width-2).Faint(true).Strikethrough(true).Render(title) + "\n" + selected.Width(width-2).Faint(true).Render(second)
 		}
 		return selected.Width(width - 2).Render(item)
@@ -2012,6 +2110,32 @@ func sameDay(a, b time.Time) bool {
 	ay, am, ad := a.Date()
 	by, bm, bd := b.Date()
 	return ay == by && am == bm && ad == bd
+}
+func dayStart(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, t.Location())
+}
+
+func calendarGrid(date time.Time) string {
+	first := time.Date(date.Year(), date.Month(), 1, 0, 0, 0, 0, date.Location())
+	var b strings.Builder
+	b.WriteString(first.Format("January 2006") + "\nMo Tu We Th Fr Sa Su\n")
+	for i := 0; i < (int(first.Weekday())+6)%7; i++ {
+		b.WriteString("   ")
+	}
+	for d := first; d.Month() == first.Month(); d = d.AddDate(0, 0, 1) {
+		cell := fmt.Sprintf("%2d", d.Day())
+		if sameDay(d, date) {
+			cell = "[" + strconv.Itoa(d.Day()) + "]"
+		} else {
+			cell += " "
+		}
+		b.WriteString(cell)
+		if d.Weekday() == time.Sunday {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }
 func truncate(s string, n int) string {
 	if n < 2 {
