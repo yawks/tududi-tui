@@ -8,13 +8,15 @@ import (
 )
 
 type appState struct {
-	ProjectUID string `json:"project_uid,omitempty"`
-	Filter     string `json:"filter"`
-	Sort       string `json:"sort,omitempty"`
-	SortDesc   bool   `json:"sort_desc,omitempty"`
-	Priority   string `json:"priority,omitempty"`
-	Status     string `json:"status,omitempty"`
-	Tags       string `json:"tags,omitempty"`
+	CalendarWeek        bool   `json:"calendar_week,omitempty"`
+	CalendarWorkingWeek bool   `json:"calendar_working_week,omitempty"`
+	ProjectUID          string `json:"project_uid,omitempty"`
+	Filter              string `json:"filter"`
+	Sort                string `json:"sort,omitempty"`
+	SortDesc            bool   `json:"sort_desc,omitempty"`
+	Priority            string `json:"priority,omitempty"`
+	Status              string `json:"status,omitempty"`
+	Tags                string `json:"tags,omitempty"`
 }
 
 func statePath() (string, error) {

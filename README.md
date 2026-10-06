@@ -39,6 +39,6 @@ Tag and project colors accept any value supported by Tududi (normally `#RRGGBB`)
 
 In the calendar, use the arrows to select a day, `enter` to browse its tasks, `esc` to return to day navigation, and `[`/`]` to change period.
 
-The active project and the last task filter are restored from `state.json` in the same config directory. Use the explicit `All` entries to clear either filter.
+The active project, the last task filter, and the calendar view are restored from `state.json` in the same config directory. Use the explicit `All` entries to clear either filter.
 
 The minimum supported terminal size is 80×20. The task detail panel is hidden automatically on narrower terminals.

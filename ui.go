@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -121,6 +122,7 @@ type model struct {
 	calDate            time.Time
 	width, height      int
 	loading            bool
+	loader             spinner.Model
 	err                string
 	status             string
 	editor             *editor
@@ -163,7 +165,7 @@ func newModel(api *client, state appState) model {
 	}
 	tagFilters := selectedNames(state.Tags)
 	today := dayStart(now)
-	return model{api: api, page: p, side: side, selectedProjectUID: state.ProjectUID, lastFilter: state.Filter, focusSide: true, loading: true, showCompleted: p == pageDone, calDate: today, doneFrom: today, doneTo: today.AddDate(0, 0, 1), sortBy: state.Sort, sortDesc: state.SortDesc, priorityFilter: state.Priority, statusFilter: state.Status, tagFilters: tagFilters}
+	return model{api: api, loader: spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(lipgloss.NewStyle().Foreground(blue))), week: state.CalendarWeek, workingWeek: state.CalendarWorkingWeek, page: p, side: side, selectedProjectUID: state.ProjectUID, lastFilter: state.Filter, focusSide: true, loading: true, showCompleted: p == pageDone, calDate: today, doneFrom: today, doneTo: today.AddDate(0, 0, 1), sortBy: state.Sort, sortDesc: state.SortDesc, priorityFilter: state.Priority, statusFilter: state.Status, tagFilters: tagFilters}
 }
 
 func pageFromFilter(filter string) page {
@@ -197,7 +199,7 @@ func (m model) persistedState() appState {
 			tags = append(tags, tag.Name)
 		}
 	}
-	return appState{ProjectUID: m.selectedProjectUID, Filter: filter, Sort: m.sortBy, SortDesc: m.sortDesc, Priority: m.priorityFilter, Status: m.statusFilter, Tags: strings.Join(tags, ",")}
+	return appState{CalendarWeek: m.week, CalendarWorkingWeek: m.workingWeek, ProjectUID: m.selectedProjectUID, Filter: filter, Sort: m.sortBy, SortDesc: m.sortDesc, Priority: m.priorityFilter, Status: m.statusFilter, Tags: strings.Join(tags, ",")}
 }
 
 func (m model) saveStateCmd() tea.Cmd {
@@ -207,7 +209,7 @@ func (m model) saveStateCmd() tea.Cmd {
 
 func (m model) Init() tea.Cmd { return m.loadCmd() }
 func (m model) loadCmd() tea.Cmd {
-	return func() tea.Msg { t, p, g, err := m.api.load(); return loadedMsg{t, p, g, err} }
+	return tea.Batch(m.loader.Tick, func() tea.Msg { t, p, g, err := m.api.load(); return loadedMsg{t, p, g, err} })
 }
 func action(fn func() error) tea.Cmd { return func() tea.Msg { return actionMsg{fn()} } }
 
@@ -216,6 +218,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
+	case spinner.TickMsg:
+		if !m.loading {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.loader, cmd = m.loader.Update(msg)
+		return m, cmd
 	case loadedMsg:
 		m.loading = false
 		if msg.err != nil {
@@ -267,6 +276,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.editor, m.confirm, m.status = nil, false, "Saved"
+		m.loading = true
 		return m, m.loadCmd()
 	case stateSavedMsg:
 		if msg.err != nil {
@@ -319,6 +329,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.week, m.workingWeek = false, false
 			}
+			return m, m.saveStateCmd()
 		}
 	case "left":
 		if m.page == pageCalendar && !m.focusSide {
@@ -877,7 +888,7 @@ func (m model) updateEditor(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			e.note.SetWidth(max(10, editorW-6))
 			e.note.SetHeight(max(3, m.height-26))
 			if e.create {
-				e.note.SetHeight(max(3, m.height-27))
+				e.note.SetHeight(max(3, m.height-22))
 			}
 		}
 		e.note, cmd = e.note.Update(key)
@@ -1317,6 +1328,11 @@ func (m model) View() string {
 	if m.width > 0 && (m.width < 80 || m.height < 20) {
 		return panel.Render("Terminal too small\nMinimum: 80x20")
 	}
+	if m.loading && m.editor == nil {
+		content := m.loader.View() + " " + titleStyle.Render("Loading…") + "\n\n" + dim.Render("Tasks · Projects · Tags")
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+			panel.Copy().BorderForeground(blue).Width(36).Align(lipgloss.Center).Padding(1, 2).Render(content))
+	}
 	if m.editor != nil && (m.editor.create || m.editor.kind != editTask || m.editor.calendar || m.editor.colorPicker) {
 		return m.editorView()
 	}
@@ -1376,7 +1392,7 @@ func (m model) View() string {
 		footer = lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Render(m.err)
 	}
 	if m.loading {
-		footer = dim.Render("Loading…")
+		footer = m.loader.View() + dim.Render(" Loading tasks, projects & tags…")
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
 }
@@ -2108,8 +2124,13 @@ func (m model) editorContent(width, height int) string {
 	}
 	kinds := []string{"task", "project", "tag"}
 	b.WriteString(titleStyle.Render(actionName+" "+kinds[e.kind]) + "\n")
+	twoColumns := e.kind == editTask && e.create
+	var cells []string
 	for i, f := range e.fields {
 		f.Width = max(10, width-3)
+		if twoColumns && i > 0 {
+			f.Width = max(10, (width-4)/2-3)
+		}
 		if e.kind == editTask {
 			switch i {
 			case 1:
@@ -2133,9 +2154,11 @@ func (m model) editorContent(width, height int) string {
 		if i == e.focus {
 			label = lipgloss.NewStyle().Foreground(blue).Bold(true).Underline(true).Render(names[i])
 		}
-		if e.kind != editTask || !e.create {
-			b.WriteByte('\n')
+		if twoColumns && i > 0 {
+			cells = append(cells, lipgloss.NewStyle().Width((width-4)/2).MaxWidth((width-4)/2).Render(label+"\n"+field))
+			continue
 		}
+		b.WriteByte('\n')
 		b.WriteString(label + "\n" + field + "\n")
 		if e.kind == editTask && e.choice != 0 && i == e.focus {
 			b.WriteString(m.taskChoiceView(width) + "\n")
@@ -2143,6 +2166,19 @@ func (m model) editorContent(width, height int) string {
 		if e.kind == editTask && i == 5 {
 			b.WriteString(m.tagPreview(f.Value()) + "\n")
 		}
+	}
+	if twoColumns {
+		for i := 0; i < len(cells); i += 2 {
+			row := cells[i]
+			if i+1 < len(cells) {
+				row = lipgloss.JoinHorizontal(lipgloss.Top, row, "    ", cells[i+1])
+			}
+			b.WriteString("\n" + row + "\n")
+		}
+		if e.choice != 0 {
+			b.WriteString(m.taskChoiceView(width) + "\n")
+		}
+		b.WriteString(m.tagPreview(e.fields[5].Value()) + "\n")
 	}
 	if e.kind != editTag {
 		label := "Description"
@@ -2152,6 +2188,9 @@ func (m model) editorContent(width, height int) string {
 		note := e.note
 		note.SetWidth(max(10, width-2))
 		note.SetHeight(max(3, height-23))
+		if twoColumns {
+			note.SetHeight(max(3, height-18))
+		}
 		labelView, noteView := dim.Render(label), note.View()
 		if e.focus == len(e.fields) {
 			labelView = lipgloss.NewStyle().Foreground(blue).Bold(true).Underline(true).Render(label)

@@ -869,6 +869,27 @@ func TestNewTaskPrefillsSelectedProject(t *testing.T) {
 	}
 }
 
+func TestNewTaskFieldsUseTwoColumnsWithSpacing(t *testing.T) {
+	m := model{width: 160, height: 40}
+	m.openNew()
+	lines := strings.Split(ansi.Strip(m.editorContent(60, 36)), "\n")
+	for _, pair := range [][2]string{{"Priority", "Status"}, {"Due date", "Project"}, {"Tags", ""}} {
+		found := false
+		for i, line := range lines {
+			if strings.Contains(line, pair[0]) && strings.Contains(line, pair[1]) {
+				found = true
+				if i == 0 || strings.TrimSpace(lines[i-1]) != "" {
+					t.Fatalf("missing empty line before %q", line)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing field row %v", pair)
+		}
+	}
+}
+
 func TestCreationKeysIgnorePageAndFocus(t *testing.T) {
 	for _, p := range []page{pageToday, pageTags, pageCalendar, pageDashboard} {
 		for _, focus := range []bool{true, false} {
@@ -1013,5 +1034,53 @@ func TestCompletionToastFailureAndExpiry(t *testing.T) {
 	updated, _ = m.Update(taskToggleMsg{task: task{Status: "done"}})
 	if updated.(model).undoTask != nil || updated.(model).toast != "Task reopened" {
 		t.Fatal("reopening must not celebrate completion")
+	}
+}
+
+func TestCalendarViewPersistsAcrossRestarts(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := model{page: pageCalendar}
+	for _, want := range []struct{ week, workingWeek bool }{{true, false}, {true, true}, {false, false}} {
+		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+		m = updated.(model)
+		if cmd == nil {
+			t.Fatal("changing calendar view should save state")
+		}
+		if msg := cmd().(stateSavedMsg); msg.err != nil {
+			t.Fatal(msg.err)
+		}
+		state, err := loadState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		restored := newModel(nil, state)
+		if restored.week != want.week || restored.workingWeek != want.workingWeek {
+			t.Fatalf("restored calendar view = (%v, %v), want (%v, %v)", restored.week, restored.workingWeek, want.week, want.workingWeek)
+		}
+	}
+}
+
+func TestLoadingAnimationLifecycle(t *testing.T) {
+	for _, loadErr := range []error{nil, errors.New("offline")} {
+		m := newModel(nil, appState{})
+		m.width, m.height = 120, 30
+		before := m.View()
+		updated, cmd := m.Update(m.loader.Tick())
+		m = updated.(model)
+		if cmd == nil || m.View() == before || !strings.Contains(m.View(), "Tasks · Projects · Tags") {
+			t.Fatal("loading spinner should animate and identify the data being loaded")
+		}
+		updated, _ = m.Update(loadedMsg{err: loadErr})
+		m = updated.(model)
+		updated, cmd = m.Update(m.loader.Tick())
+		m = updated.(model)
+		if m.loading || cmd != nil || strings.Contains(m.View(), "Tasks · Projects · Tags") {
+			t.Fatal("animation should stop after loading succeeds or fails")
+		}
+		updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+		m = updated.(model)
+		if !m.loading || cmd == nil {
+			t.Fatal("refresh should restart loading")
+		}
 	}
 }
