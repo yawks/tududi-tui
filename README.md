@@ -22,7 +22,10 @@ go run .
 | `j`/`k`, arrows | Move |
 | `tab` | Switch sidebar/content |
 | `enter` | Open sidebar item |
-| `n`, `e`, `d` | Create, edit, delete |
+| `n` | New task (from any view) |
+| `N` | New project |
+| `T` | New tag |
+| `e`, `d` | Edit, delete |
 | `space` | Complete/reopen task |
 | `h` | Toggle completed tasks |
 | `v` | Month/week/working-week calendar |

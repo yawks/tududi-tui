@@ -13,6 +13,61 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+func TestSidebarListsTagsBelowProjects(t *testing.T) {
+	m := model{
+		projects: []project{{Name: "My project"}},
+		tags:     []tag{{Name: "work", Color: "#ff0000"}, {Name: "home"}},
+	}
+	got := ansi.Strip(m.sidebarView())
+	projectIndex := strings.Index(got, "● My project")
+	tagsIndex := strings.Index(got, "TAGS")
+	workIndex := strings.Index(got, "#work")
+	homeIndex := strings.Index(got, "#home")
+	if projectIndex < 0 || tagsIndex <= projectIndex || workIndex <= tagsIndex || homeIndex <= workIndex {
+		t.Fatalf("tags should appear below projects: %q", got)
+	}
+	if !strings.Contains(got, "#  Tags") {
+		t.Fatalf("tag menu should remain available: %q", got)
+	}
+}
+
+func TestSidebarTagSelectionFiltersTasks(t *testing.T) {
+	for _, p := range []page{pageAll, pageDashboard, pageTags, pageCalendar} {
+		m := model{
+			page: p, lastFilter: "all", focusSide: true, side: sideFirstProject,
+			projects:   []project{{UID: "one"}},
+			tags:       []tag{{Name: "Work"}, {Name: "Home"}},
+			tagFilters: map[string]bool{"home": true},
+			tasks:      []task{{Name: "work task", Tags: []tag{{Name: "work"}}}, {Name: "home task", Tags: []tag{{Name: "Home"}}}},
+		}
+		m.move(1)
+		m.chooseSide()
+		if len(m.tagFilters) != 0 || len(m.filteredTasks()) != 2 || m.persistedState().Tags != "" {
+			t.Fatal("All tags should clear the tag filter")
+		}
+		view := ansi.Strip(m.sidebarView())
+		if !strings.Contains(view[strings.Index(view, "TAGS"):], "> All") {
+			t.Fatal("All should be marked in the tags section")
+		}
+		m.move(1)
+		m.chooseSide()
+		if got := m.filteredTasks(); m.page != pageAll || len(got) != 1 || got[0].Name != "work task" {
+			t.Fatalf("tag selection from page %d did not filter tasks: %#v", p, got)
+		}
+		if m.persistedState().Tags != "Work" || !strings.Contains(ansi.Strip(m.sidebarView()), "> #Work") {
+			t.Fatal("selected tag should be marked and persisted")
+		}
+		m.move(1)
+		if m.side != m.sideCount()-1 {
+			t.Fatal("last tag should be reachable")
+		}
+		m.move(1)
+		if m.side != 0 {
+			t.Fatal("navigation should wrap after the last tag")
+		}
+	}
+}
+
 func TestNumericTaskPriorityFromAPI(t *testing.T) {
 	var got struct {
 		Tasks []task `json:"tasks"`
@@ -254,7 +309,7 @@ func TestSortChoosesCriterionThenDirection(t *testing.T) {
 func TestLateTagIsShownOnlyForOverdueActiveTasks(t *testing.T) {
 	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
 	m := model{}
-	if got := m.taskListItem(task{Name: "late", DueDate: yesterday}, 60, false); !strings.Contains(got, "⚠  late") || lipgloss.Width(strings.Split(got, "\n")[1]) != 58 {
+	if got := m.taskListItem(task{Name: "late", DueDate: yesterday}, 60, false); !strings.Contains(got, "⚠  late") || lipgloss.Width(strings.Split(got, "\n")[1]) != 60 {
 		t.Fatalf("late tag missing: %q", got)
 	}
 	if got := m.taskListItem(task{Name: "done", DueDate: yesterday, Status: "done"}, 60, false); strings.Contains(got, "⚠  late") {
@@ -273,8 +328,8 @@ func TestCompletedTaskTitleIsStruckAndDimmed(t *testing.T) {
 func TestSelectedCompletedTaskKeepsFullHighlight(t *testing.T) {
 	got := (model{}).taskListItem(task{Name: "finished", Status: "done"}, 60, true)
 	for i, line := range strings.Split(got, "\n") {
-		if lipgloss.Width(line) != 58 {
-			t.Fatalf("line %d width = %d, want 58: %q", i, lipgloss.Width(line), line)
+		if lipgloss.Width(line) != 60 {
+			t.Fatalf("line %d width = %d, want 60: %q", i, lipgloss.Width(line), line)
 		}
 	}
 }
@@ -568,13 +623,21 @@ func TestSelectedTagUsesOneContinuousHighlight(t *testing.T) {
 	}
 }
 
-func TestFooterKeyCapsStayOnOneLine(t *testing.T) {
-	footer := (model{width: 80}).footerView()
-	if lipgloss.Height(footer) != 1 || lipgloss.Width(footer) > 80 {
-		t.Fatalf("footer size = %dx%d", lipgloss.Width(footer), lipgloss.Height(footer))
-	}
-	if !strings.Contains(footer, "│") {
-		t.Fatal("footer shortcuts are not framed")
+func TestFooterKeysUseTwoAlignedRows(t *testing.T) {
+	for _, width := range []int{80, 100, 120, 160} {
+		footer := (model{width: width}).footerView()
+		if lipgloss.Height(footer) != 2 || lipgloss.Width(footer) > width {
+			t.Fatalf("footer size = %dx%d, terminal width %d", lipgloss.Width(footer), lipgloss.Height(footer), width)
+		}
+		rows := strings.Split(ansi.Strip(footer), "\n")
+		for i, r := range []rune(rows[0]) {
+			if r == '│' && []rune(rows[1])[i] != '│' {
+				t.Fatal("footer column separators are not aligned")
+			}
+		}
+		if !strings.Contains(rows[0], "n") || !strings.Contains(rows[1], "N") || !strings.Contains(rows[1], "project") {
+			t.Fatal("footer must show both creation shortcuts")
+		}
 	}
 }
 
@@ -666,8 +729,8 @@ func TestStatusFilterAndIcons(t *testing.T) {
 		t.Fatalf("filtered tasks = %#v", got)
 	}
 	for _, task := range m.tasks {
-		if got := lipgloss.Width(strings.Split(m.taskListItem(task, 20, true), "\n")[0]); got != 18 {
-			t.Fatalf("%s title width = %d, want 18", statusName(task.Status), got)
+		if got := lipgloss.Width(strings.Split(m.taskListItem(task, 20, true), "\n")[0]); got != 20 {
+			t.Fatalf("%s title width = %d, want 20", statusName(task.Status), got)
 		}
 	}
 	if got := ansi.Strip(strings.Split(m.taskListItem(m.tasks[0], 20, false), "\n")[0]); strings.HasPrefix(got, " ") || strings.HasPrefix(got, "📝") {
@@ -694,6 +757,34 @@ func TestTaskDetailShowsColoredProjectPriorityAndStatus(t *testing.T) {
 	}
 }
 
+func TestTaskDetailScrollsAndResetsOnSelection(t *testing.T) {
+	m := model{page: pageAll, width: 160, height: 20, focusSide: false, tasks: []task{
+		{Name: "First", Note: strings.Repeat("line\n\n", 40) + "last line"},
+		{Name: "Second"},
+	}}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m = updated.(model)
+	firstPage := m.detailScroll
+	if firstPage == 0 || !strings.Contains(ansi.Strip(m.View()), "%") {
+		t.Fatal("page down should scroll and show progress")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m = updated.(model)
+	if m.detailScroll <= firstPage {
+		t.Fatal("a second page down should continue scrolling")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m = updated.(model)
+	if !strings.Contains(ansi.Strip(m.taskDetailView(m.tasks[0], 49, 17)), "last line") {
+		t.Fatal("end should show the bottom of the task description")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(model)
+	if m.cursor != 1 || m.detailScroll != 0 {
+		t.Fatalf("selection = %d, scroll = %d; want 1, 0", m.cursor, m.detailScroll)
+	}
+}
+
 func TestCalendarKeepsStatusAndPlansDatedTask(t *testing.T) {
 	m := model{}
 	m.openNew()
@@ -714,13 +805,21 @@ func TestCalendarKeepsStatusAndPlansDatedTask(t *testing.T) {
 func TestLongTaskDescriptionKeepsEditorButtonsVisible(t *testing.T) {
 	m := model{page: pageAll, width: 160, height: 30}
 	m.openNew()
-	m.editor.note.SetValue(strings.Repeat("long description\n", 100))
+	m.editor.note.SetValue("first line\n" + strings.Repeat("x", 200) + "TAIL")
+	m.editor.focus = len(m.editor.fields)
+	m.editor.note.Focus()
+	_ = m.View()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")})
+	m = updated.(model)
 	view := m.View()
 	if !strings.Contains(view, "Save  ctrl+s") || !strings.Contains(view, "Cancel  esc") {
 		t.Fatal("fixed editor buttons are not visible")
 	}
 	if got := lipgloss.Height(view); got > m.height {
 		t.Fatalf("view height = %d, terminal = %d", got, m.height)
+	}
+	if !strings.Contains(ansi.Strip(view), "TAIL") {
+		t.Fatal("end of the active description line is hidden")
 	}
 	actions := strings.Split(ansi.Strip(m.editorContent(60, 25)), "\n")
 	if last := actions[len(actions)-1]; !strings.HasPrefix(last, " ") || !strings.Contains(last, "Save  ctrl+s") {
@@ -750,5 +849,80 @@ func TestTaskEditorRendersInRightSidebar(t *testing.T) {
 	}
 	if got := lipgloss.Width(view); got > m.width {
 		t.Fatalf("view width = %d, terminal = %d", got, m.width)
+	}
+}
+
+func TestCreationKeysIgnorePageAndFocus(t *testing.T) {
+	for _, p := range []page{pageToday, pageTags, pageCalendar, pageDashboard} {
+		for _, focus := range []bool{true, false} {
+			for key, kind := range map[string]editorKind{"n": editTask, "N": editProject, "T": editTag} {
+				m := model{page: p, focusSide: focus, side: sideFirstProject, projects: []project{{Name: "Work"}}}
+				updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+				got := updated.(model)
+				if got.editor == nil || got.editor.kind != kind || !got.editor.create {
+					t.Fatalf("page %d, focus %v, key %s: wrong editor", p, focus, key)
+				}
+			}
+		}
+	}
+}
+
+func TestTaskListScrollIndicator(t *testing.T) {
+	m := model{page: pageAll, width: 160, height: 30}
+	for i := 0; i < 30; i++ {
+		m.tasks = append(m.tasks, task{Name: fmt.Sprintf("task %02d", i)})
+	}
+	for _, cursor := range []int{0, 15, 29} {
+		m.cursor = cursor
+		view := ansi.Strip(m.contentView(70))
+		lines := strings.Split(view, "\n")
+		if len(lines) != m.height-4 || !strings.Contains(lines[len(lines)-1], "/ 30") {
+			t.Fatalf("pager must occupy the last panel line: height %d, last line %q", len(lines), lines[len(lines)-1])
+		}
+		if !strings.Contains(view, "/ 30") || strings.Contains(view, "↑") != (cursor >= 7) || strings.Contains(view, "↓") != (cursor < 29) {
+			t.Fatalf("cursor %d: wrong indicator: %s", cursor, view)
+		}
+	}
+	m.tasks = m.tasks[:2]
+	m.cursor = 0
+	if strings.Contains(ansi.Strip(m.contentView(70)), "/ 2") {
+		t.Fatal("short list should not have a scroll indicator")
+	}
+}
+
+func TestTaskListShowsColoredProjectBeforeTagsForAllProjects(t *testing.T) {
+	p := project{ID: 7, UID: "work", Name: "Work", Color: "#ff00ff"}
+	m := model{projects: []project{p}}
+	for _, task := range []task{
+		{Name: "Task", ProjectID: 7, Tags: []tag{{Name: "urgent"}}},
+		{Name: "Task", ProjectUID: "work", Tags: []tag{{Name: "urgent"}}},
+		{Name: "Task", Project: &p, Tags: []tag{{Name: "urgent"}}},
+	} {
+		for _, active := range []bool{true, false} {
+			line := strings.Split(m.taskListItem(task, 60, active), "\n")[1]
+			want := lipgloss.NewStyle().Foreground(lipgloss.Color(p.Color)).Render("● Work")
+			if !strings.Contains(line, want) || !strings.HasPrefix(strings.TrimSpace(ansi.Strip(line)), "● Work  #urgent") {
+				t.Fatalf("missing colored project before tags: %q", line)
+			}
+		}
+		m.selectedProjectUID = p.UID
+		if strings.Contains(ansi.Strip(m.taskListItem(task, 60, false)), "● Work") {
+			t.Fatal("project should be hidden when filtering by project")
+		}
+		m.selectedProjectUID = ""
+	}
+	if strings.Contains(ansi.Strip(m.taskListItem(task{Name: "No project"}, 60, false)), "●") {
+		t.Fatal("task without project should have no project label")
+	}
+}
+
+func TestSidebarTagPrefixKeepsColor(t *testing.T) {
+	m := model{tags: []tag{{Name: "work", Color: "#ff00ff"}}, side: sideFirstProject + 1}
+	for _, focus := range []bool{true, false} {
+		m.focusSide = focus
+		view := m.sidebarView()
+		if !strings.Contains(view, lipgloss.NewStyle().Foreground(lipgloss.Color("#ff00ff")).Render("  #work")) || strings.Contains(ansi.Strip(view), "● work") {
+			t.Fatalf("tag prefix/color missing: %q", view)
+		}
 	}
 }

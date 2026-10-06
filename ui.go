@@ -125,6 +125,7 @@ type model struct {
 	doneFrom, doneTo   time.Time
 	doneDate           time.Time
 	donePicking        int
+	detailScroll       int
 }
 
 var (
@@ -301,6 +302,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.move(-1)
 	case "down", "j":
 		m.move(1)
+	case "pgup", "pgdown", "home", "end":
+		if !m.focusSide {
+			m.scrollTaskDetail(key.String())
+		}
 	case "enter":
 		if m.focusSide {
 			cmd := m.chooseSide()
@@ -320,6 +325,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.calendarTasks = false
 	case "n":
 		m.openNew()
+	case "N":
+		m.editor = &editor{kind: editProject, create: true, fields: []textinput.Model{input("", "Name"), input("#3b82f6", "#RRGGBB"), input("not_started", "Status")}, note: note("", "Description")}
+		m.editor.fields[0].Focus()
+	case "T":
+		m.editor = &editor{kind: editTag, create: true, fields: []textinput.Model{input("", "Name"), input("#3b82f6", "#RRGGBB")}}
+		m.editor.fields[0].Focus()
 	case "e":
 		m.openEdit()
 	case "d":
@@ -359,6 +370,29 @@ func (m *model) move(n int) {
 	}
 	m.cursor += n
 	m.clamp()
+	m.detailScroll = 0
+}
+
+func (m *model) scrollTaskDetail(key string) {
+	t, ok := m.selectedTask()
+	if !ok {
+		return
+	}
+	width := min(64, max(38, m.width/3)) - 4
+	lines := m.taskDetailLines(t, width)
+	visible := max(1, m.height-5) // one line is reserved for the scroll indicator
+	last := max(0, len(lines)-visible)
+	page := max(1, visible-1) // keep one line of context between pages
+	switch key {
+	case "home":
+		m.detailScroll = 0
+	case "end":
+		m.detailScroll = last
+	case "pgup":
+		m.detailScroll = max(0, m.detailScroll-page)
+	case "pgdown":
+		m.detailScroll = min(last, m.detailScroll+page)
+	}
 }
 func (m *model) moveCalendarDays(n int) {
 	m.calendarTasks = false
@@ -398,7 +432,7 @@ func (m *model) clamp() {
 		m.cursor = 0
 	}
 }
-func (m model) sideCount() int { return sideFirstProject + len(m.projects) }
+func (m model) sideCount() int { return sideFirstProject + len(m.projects) + 1 + len(m.tags) }
 func (m *model) chooseSide() tea.Cmd {
 	m.cursor = 0
 	if m.side == sideDashboard {
@@ -427,6 +461,19 @@ func (m *model) chooseSide() tea.Cmd {
 	}
 	if m.side == sideAllProjects {
 		m.selectedProjectUID = ""
+		return m.saveStateCmd()
+	}
+	if i := m.side - sideFirstProject - len(m.projects); i >= 0 && i <= len(m.tags) {
+		m.tagFilters = map[string]bool{}
+		if i > 0 {
+			m.tagFilters[strings.ToLower(m.tags[i-1].Name)] = true
+		}
+		if m.page == pageDashboard || m.page == pageCalendar || m.page == pageTags {
+			m.page = pageFromFilter(m.lastFilter)
+			if m.page == pageDashboard {
+				m.page, m.lastFilter = pageAll, "all"
+			}
+		}
 		return m.saveStateCmd()
 	}
 	p := m.projects[m.side-sideFirstProject]
@@ -599,17 +646,7 @@ func note(value, placeholder string) textarea.Model {
 }
 
 func (m *model) openNew() {
-	if _, ok := m.focusedProject(); ok {
-		m.editor = &editor{kind: editProject, create: true, fields: []textinput.Model{input("", "Name"), input("#3b82f6", "#RRGGBB"), input("not_started", "Status")}, note: note("", "Description")}
-		m.editor.fields[0].Focus()
-		return
-	}
-	switch m.page {
-	case pageTags:
-		m.editor = &editor{kind: editTag, create: true, fields: []textinput.Model{input("", "Name"), input("#3b82f6", "#RRGGBB")}}
-	default:
-		m.editor = &editor{kind: editTask, create: true, fields: []textinput.Model{input("", "Name"), input("Medium", "Priority"), input("Not started", "Status"), input("", "Due date"), input("", "Project"), input("", "Tags, comma separated")}, note: note("", "Markdown description")}
-	}
+	m.editor = &editor{kind: editTask, create: true, fields: []textinput.Model{input("", "Name"), input("Medium", "Priority"), input("Not started", "Status"), input("", "Due date"), input("", "Project"), input("", "Tags, comma separated")}, note: note("", "Markdown description")}
 	m.editor.fields[0].Focus()
 }
 
@@ -776,7 +813,7 @@ func (m model) updateEditor(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if e.kind == editTask {
 			editorW := min(64, max(38, m.width/3))
 			e.note.SetWidth(max(10, editorW-6))
-			e.note.SetHeight(max(3, m.height-25))
+			e.note.SetHeight(max(3, m.height-26))
 		}
 		e.note, cmd = e.note.Update(key)
 	} else if e.kind == editTask && e.focus >= 1 && e.focus <= 5 {
@@ -1237,19 +1274,19 @@ func (m model) View() string {
 		rightW = min(64, max(38, m.width/3))
 		mainW -= rightW
 	}
-	sidebar := panel.Width(sideW - 2).Height(m.height - 3).Render(m.sidebarView())
-	content := panel.Width(mainW - 2).Height(m.height - 3).Render(m.contentView(mainW - 4))
+	sidebar := panel.Width(sideW - 2).Height(m.height - 4).Render(m.sidebarView())
+	content := panel.Width(mainW - 2).Height(m.height - 4).Render(m.contentView(mainW - 4))
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, content)
 	if rightW > 0 {
 		right := ""
 		if m.editor != nil && m.editor.kind == editTask {
-			right = m.editorContent(rightW-4, m.height-3)
+			right = m.editorContent(rightW-4, m.height-4)
 		} else if !m.focusSide {
 			if t, ok := m.selectedTask(); ok {
-				right = m.taskDetail(t, rightW-4)
+				right = m.taskDetailView(t, rightW-4, m.height-4)
 			}
 		}
-		body = lipgloss.JoinHorizontal(lipgloss.Top, body, panel.Width(rightW-2).Height(m.height-3).MaxHeight(m.height-1).Render(right))
+		body = lipgloss.JoinHorizontal(lipgloss.Top, body, panel.Width(rightW-2).Height(m.height-4).MaxHeight(m.height-2).Render(right))
 	} else if m.editor != nil && m.editor.kind == editTask {
 		popupW := min(64, m.width-8)
 		popup := panel.Width(popupW - 2).Render(m.editorContent(popupW-4, min(24, m.height-4)))
@@ -1270,19 +1307,28 @@ func (m model) footerView() string {
 	if m.showCompleted {
 		completionLabel = "active"
 	}
-	items := [][2]string{{"tab", "focus"}, {"n", "new"}, {"e", "edit"}, {"d", "delete"}, {"space", "complete"}, {"s", "sort"}, {"f", "filter"}, {"h", completionLabel}, {"r", "refresh"}, {"?", "help"}, {"q", "quit"}}
-	if m.width < 150 {
-		items = [][2]string{{"tab", "focus"}, {"n", "new"}, {"e", "edit"}, {"d", "delete"}, {"space", "done"}, {"h", completionLabel}, {"?", "help"}, {"q", "quit"}}
+	items := [][2]string{{"tab", "focus"}, {"?", "help"}, {"n", "task"}, {"N", "project"}, {"e", "edit"}, {"d", "delete"}, {"space", "complete"}, {"h", completionLabel}, {"s", "sort"}, {"f", "filter"}, {"r", "refresh"}, {"q", "quit"}}
+	if m.width < 120 {
+		items = [][2]string{{"tab", "focus"}, {"?", "help"}, {"n", "task"}, {"N", "project"}, {"e", "edit"}, {"d", "delete"}, {"space", "done"}, {"q", "quit"}}
 	}
-	if m.width < 105 {
-		items = [][2]string{{"tab", "focus"}, {"n", "new"}, {"e", "edit"}, {"h", completionLabel}, {"?", "help"}, {"q", "quit"}}
+	capStyle := lipgloss.NewStyle().Background(blue).Foreground(lipgloss.Color("#ffffff")).Bold(true).Padding(0, 1)
+	columns := make([]string, 0, len(items)/2)
+	columnWidth := max(1, (m.width-(len(items)/2-1)*3)/(len(items)/2))
+	for i := 0; i < len(items); i += 2 {
+		keyWidth := max(lipgloss.Width(items[i][0]), lipgloss.Width(items[i+1][0]))
+		rows := make([]string, 2)
+		for row := range rows {
+			item := items[i+row]
+			rows[row] = ansi.Truncate(capStyle.Width(keyWidth+2).Render(item[0])+" "+dim.Render(item[1]), columnWidth, "…")
+		}
+		columns = append(columns, lipgloss.NewStyle().Width(columnWidth).Render(strings.Join(rows, "\n")))
 	}
-	capStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder(), false, true, false, true).BorderForeground(lipgloss.Color("#1f6feb")).Background(lipgloss.Color("#1f6feb")).Foreground(lipgloss.Color("#ffffff")).Bold(true).Padding(0, 1)
-	parts := make([]string, len(items))
-	for i, item := range items {
-		parts[i] = capStyle.Render(item[0]) + " " + dim.Render(item[1])
+	separator := dim.Render(" │ \n │ ")
+	parts := []string{columns[0]}
+	for _, column := range columns[1:] {
+		parts = append(parts, separator, column)
 	}
-	return strings.Join(parts, "  ")
+	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 }
 
 func (m model) sidebarView() string {
@@ -1319,6 +1365,24 @@ func (m model) sidebarView() string {
 		}
 		b.WriteString(m.sideLine(i+sideFirstProject, name))
 		b.WriteByte('\n')
+	}
+	b.WriteString("\n" + dim.Render(strings.ToUpper(labels.Tags)) + "\n")
+	allTags := "  All"
+	if len(m.tagFilters) == 0 {
+		allTags = "> All"
+	}
+	b.WriteString(m.sideLine(sideFirstProject+len(m.projects), allTags) + "\n")
+	for i, t := range m.tags {
+		index := sideFirstProject + len(m.projects) + 1 + i
+		prefix := "  "
+		if m.tagFilters[strings.ToLower(t.Name)] {
+			prefix = "> "
+		}
+		name := prefix + "#" + t.Name
+		if t.Color != "" {
+			name = lipgloss.NewStyle().Foreground(lipgloss.Color(t.Color)).Render(name)
+		}
+		b.WriteString(m.sideLine(index, name) + "\n")
 	}
 	return b.String()
 }
@@ -1385,7 +1449,7 @@ func (m model) contentView(width int) string {
 		return b.String()
 	}
 	listW := width
-	visibleCount := max(1, (m.height-8)/3)
+	visibleCount := max(1, (m.height-9)/3)
 	start := 0
 	if m.cursor >= visibleCount {
 		start = m.cursor - visibleCount + 1
@@ -1396,8 +1460,19 @@ func (m model) contentView(width int) string {
 	for i, t := range visible {
 		list.WriteString(m.taskListItem(t, listW, !m.focusSide && start+i == m.cursor))
 		if i < len(visible)-1 {
-			list.WriteString("\n" + dim.Render(strings.Repeat("─", max(1, listW-2))) + "\n")
+			list.WriteString("\n" + dim.Render(strings.Repeat("─", max(1, listW))) + "\n")
 		}
+	}
+	if len(ts) > visibleCount {
+		above, below := " ", " "
+		if start > 0 {
+			above = "↑"
+		}
+		if end < len(ts) {
+			below = "↓"
+		}
+		body := lipgloss.NewStyle().Height(max(1, m.height-5)).Render(b.String() + list.String())
+		return body + "\n" + dim.Render(fmt.Sprintf("%s %d–%d / %d %s", above, start+1, end, len(ts), below))
 	}
 	return b.String() + list.String()
 }
@@ -1606,13 +1681,22 @@ func (m model) taskListItem(t task, width int, active bool) string {
 	if prefix != "" {
 		prefix += " "
 	}
-	title := prefix + truncate(t.Name, width-2-lipgloss.Width(prefix))
+	title := prefix + truncate(t.Name, width-lipgloss.Width(prefix))
 	if t.completed() && m.page != pageDone {
 		if !active {
 			title = lipgloss.NewStyle().Foreground(muted).Faint(true).Strikethrough(true).Render(title)
 		}
 	}
 	var metadata []string
+	if m.selectedProjectUID == "" {
+		if p := m.taskProject(t); p != nil {
+			style := dim
+			if p.Color != "" {
+				style = lipgloss.NewStyle().Foreground(lipgloss.Color(p.Color))
+			}
+			metadata = append(metadata, style.Render("● "+p.Name))
+		}
+	}
 	late := ""
 	for _, tag := range t.Tags {
 		if active {
@@ -1654,13 +1738,13 @@ func (m model) taskListItem(t task, width int, active bool) string {
 		priority = lipgloss.NewStyle().Foreground(lipgloss.Color(priorityColor)).Bold(true).Render(priority)
 	}
 	second = "  " + strings.Join(metadata, "  ")
-	second += strings.Repeat(" ", max(1, width-2-lipgloss.Width(second)-lipgloss.Width(priority))) + priority
+	second += strings.Repeat(" ", max(1, width-lipgloss.Width(second)-lipgloss.Width(priority))) + priority
 	item := title + "\n" + second
 	if active {
 		if t.completed() && m.page != pageDone {
-			return selected.Width(width-2).Faint(true).Strikethrough(true).Render(title) + "\n" + selected.Width(width-2).Faint(true).Render(second)
+			return selected.Width(width).Faint(true).Strikethrough(true).Render(title) + "\n" + selected.Width(width).Faint(true).Render(second)
 		}
-		return selected.Width(width - 2).Render(item)
+		return selected.Width(width).Render(item)
 	}
 	return item
 }
@@ -1689,14 +1773,40 @@ func (m model) taskDetail(t task, width int) string {
 	}
 	if t.Note != "" {
 		b.WriteString(dim.Render(strings.Repeat("─", max(1, width))) + "\n")
-		rendered, err := glamour.Render(t.Note, "light")
+		renderer, err := glamour.NewTermRenderer(glamour.WithStylePath("light"), glamour.WithWordWrap(width))
 		if err == nil {
-			b.WriteString(rendered)
+			rendered, renderErr := renderer.Render(t.Note)
+			if renderErr == nil {
+				b.WriteString(rendered)
+			} else {
+				b.WriteString(t.Note)
+			}
 		} else {
 			b.WriteString(t.Note)
 		}
 	}
 	return b.String()
+}
+
+func (m model) taskDetailLines(t task, width int) []string {
+	return strings.Split(strings.TrimSuffix(m.taskDetail(t, width), "\n"), "\n")
+}
+
+func (m model) taskDetailView(t task, width, height int) string {
+	lines := m.taskDetailLines(t, width)
+	if len(lines) <= height {
+		return strings.Join(lines, "\n")
+	}
+	visible := max(1, height-1)
+	start := min(m.detailScroll, len(lines)-visible)
+	percent := (start + visible) * 100 / len(lines)
+	arrows := "↑↓"
+	if start == 0 {
+		arrows = " ↓"
+	} else if start+visible == len(lines) {
+		arrows = "↑ "
+	}
+	return strings.Join(lines[start:start+visible], "\n") + "\n" + lipgloss.PlaceHorizontal(width, lipgloss.Right, dim.Render(fmt.Sprintf("%s %d%%", arrows, percent)))
 }
 
 func (m model) taskProject(t task) *project {
@@ -1743,7 +1853,7 @@ func (m model) calendarView(width int) string {
 	start := first.AddDate(0, 0, -(int(first.Weekday())+6)%7)
 	cellW := max(7, width/7)
 	detail := m.calendarSelection(width)
-	cellH := max(3, (m.height-7-lipgloss.Height(detail))/6)
+	cellH := max(3, (m.height-8-lipgloss.Height(detail))/6)
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(m.calDate.Format("January 2006")) + dim.Render("  arrows day  enter tasks  [/] month  v view") + "\n")
 	if detail != "" {
@@ -1798,7 +1908,7 @@ func (m model) weekView(width int) string {
 	rows := (days + 1) / 2
 	cellW := max(16, width/2)
 	detail := m.calendarSelection(width)
-	cellH := max(5, (m.height-5-lipgloss.Height(detail))/rows)
+	cellH := max(5, (m.height-6-lipgloss.Height(detail))/rows)
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(title+start.Format("02 January 2006")) + dim.Render("  arrows day  enter tasks  [/] week  v view") + "\n")
 	if detail != "" {
@@ -1888,7 +1998,7 @@ func overlayCentered(base, popup string) string {
 }
 
 func (m model) calendarTaskLines(t task, width int, active bool) []string {
-	return strings.Split(m.taskListItem(t, width+2, active), "\n")
+	return strings.Split(m.taskListItem(t, width, active), "\n")
 }
 
 func (m model) editorView() string {
@@ -1956,7 +2066,7 @@ func (m model) editorContent(width, height int) string {
 		}
 		note := e.note
 		note.SetWidth(max(10, width-2))
-		note.SetHeight(max(3, height-20))
+		note.SetHeight(max(3, height-23))
 		labelView, noteView := dim.Render(label), note.View()
 		if e.focus == len(e.fields) {
 			labelView = lipgloss.NewStyle().Foreground(blue).Bold(true).Underline(true).Render(label)
@@ -2103,7 +2213,7 @@ func (m model) miniCalendarView() string {
 	return b.String()
 }
 func (m model) helpView() string {
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel.Width(60).Render(titleStyle.Render("Keyboard")+"\n\n↑/↓ or j/k  move\n←/→ or tab  switch sidebar/content\ncalendar arrows  select day/task\ncalendar enter   browse day's tasks\n[/]              previous/next calendar period\nenter            open sidebar item\nn/e/d            new/edit/delete\nspace            toggle task completion\nh                active/completed tasks\nv                calendar view\nr                refresh\n?                close help\nq                quit"))
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel.Width(60).Render(titleStyle.Render("Keyboard")+"\n\n↑/↓ or j/k  move\n←/→ or tab  switch sidebar/content\ncalendar arrows  select day/task\ncalendar enter   browse day's tasks\n[/]              previous/next calendar period\nenter            open sidebar item\nn                new task\nN                new project\nT                new tag\ne/d              edit/delete\nspace            toggle task completion\nh                active/completed tasks\nv                calendar view\nr                refresh\n?                close help\nq                quit"))
 }
 
 func sameDay(a, b time.Time) bool {

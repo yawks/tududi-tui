@@ -17,7 +17,7 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "warning: ignoring state:", err)
 	}
-	p := tea.NewProgram(newModel(newClient(cfg), state), tea.WithAltScreen())
+	p := tea.NewProgram(newModel(newClient(cfg), state), tea.WithAltScreen(), tea.WithFPS(10))
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
