@@ -134,6 +134,10 @@ func (c *client) toggleTask(t task) error {
 	if t.completed() {
 		status = "not_started"
 	}
+	return c.setTaskStatus(t, status)
+}
+
+func (c *client) setTaskStatus(t task, status string) error {
 	return c.do(http.MethodPatch, "task/"+ident(t.UID, t.ID), map[string]string{"status": status}, nil)
 }
 func (c *client) deleteTask(t task) error {

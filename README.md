@@ -27,6 +27,7 @@ go run .
 | `T` | New tag |
 | `e`, `d` | Edit, delete |
 | `space` | Complete/reopen task |
+| `u` | Undo the last completion while its toast is visible (6 seconds) |
 | `h` | Toggle completed tasks |
 | `v` | Month/week/working-week calendar |
 | `r` | Refresh |

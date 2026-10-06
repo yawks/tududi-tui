@@ -54,6 +54,17 @@ type loadedMsg struct {
 	err      error
 }
 type actionMsg struct{ err error }
+type taskToggleMsg struct {
+	task task
+	undo bool
+	err  error
+}
+type celebrationTickMsg struct{ generation int }
+
+func celebrationTick(generation int) tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return celebrationTickMsg{generation} })
+}
+
 type stateSavedMsg struct{ err error }
 type editorKind int
 
@@ -126,6 +137,10 @@ type model struct {
 	doneDate           time.Time
 	donePicking        int
 	detailScroll       int
+	undoTask           *task
+	toast              string
+	toastFrame         int
+	toastGeneration    int
 }
 
 var (
@@ -214,6 +229,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.saveStateCmd()
 		}
 		return m, nil
+	case celebrationTickMsg:
+		if msg.generation != m.toastGeneration || m.toast == "" {
+			return m, nil
+		}
+		m.toastFrame++
+		if m.toastFrame >= 60 {
+			m.toast, m.undoTask = "", nil
+			return m, nil
+		}
+		return m, celebrationTick(m.toastGeneration)
+	case taskToggleMsg:
+		if msg.err != nil {
+			m.loading = false
+			m.err = msg.err.Error()
+			return m, nil
+		}
+		m.err = ""
+		m.toastGeneration++
+		m.toastFrame = 0
+		if msg.undo {
+			m.undoTask = nil
+			m.toast = "Completion undone"
+		} else if !msg.task.completed() {
+			t := msg.task
+			m.undoTask = &t
+			m.toast = "Well done 🎉"
+		} else {
+			m.undoTask = nil
+			m.toast = "Task reopened"
+		}
+		return m, tea.Batch(m.loadCmd(), celebrationTick(m.toastGeneration))
 	case actionMsg:
 		m.loading = false
 		if msg.err != nil {
@@ -337,10 +383,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.selectedExists() {
 			m.confirm = true
 		}
-	case " ":
-		if t, ok := m.selectedTask(); ok {
+	case "u":
+		if m.undoTask != nil && !m.loading {
+			t := *m.undoTask
 			m.loading = true
-			return m, action(func() error { return m.api.toggleTask(t) })
+			return m, func() tea.Msg {
+				return taskToggleMsg{task: t, undo: true, err: m.api.setTaskStatus(t, statusName(t.Status))}
+			}
+		}
+	case " ":
+		if t, ok := m.selectedTask(); ok && !m.loading {
+			m.loading = true
+			return m, func() tea.Msg { return taskToggleMsg{task: t, err: m.api.toggleTask(t)} }
 		}
 	}
 	return m, nil
@@ -647,6 +701,11 @@ func note(value, placeholder string) textarea.Model {
 
 func (m *model) openNew() {
 	m.editor = &editor{kind: editTask, create: true, fields: []textinput.Model{input("", "Name"), input("Medium", "Priority"), input("Not started", "Status"), input("", "Due date"), input("", "Project"), input("", "Tags, comma separated")}, note: note("", "Markdown description")}
+	if m.selectedProjectUID != "" {
+		if p := m.selectedProject(); p != nil {
+			m.editor.fields[4].SetValue(p.Name)
+		}
+	}
 	m.editor.fields[0].Focus()
 }
 
@@ -812,8 +871,14 @@ func (m model) updateEditor(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if e.focus == len(e.fields) {
 		if e.kind == editTask {
 			editorW := min(64, max(38, m.width/3))
+			if e.create {
+				editorW = 64
+			}
 			e.note.SetWidth(max(10, editorW-6))
 			e.note.SetHeight(max(3, m.height-26))
+			if e.create {
+				e.note.SetHeight(max(3, m.height-27))
+			}
 		}
 		e.note, cmd = e.note.Update(key)
 	} else if e.kind == editTask && e.focus >= 1 && e.focus <= 5 {
@@ -1252,7 +1317,7 @@ func (m model) View() string {
 	if m.width > 0 && (m.width < 80 || m.height < 20) {
 		return panel.Render("Terminal too small\nMinimum: 80x20")
 	}
-	if m.editor != nil && (m.editor.kind != editTask || m.editor.calendar || m.editor.colorPicker) {
+	if m.editor != nil && (m.editor.create || m.editor.kind != editTask || m.editor.calendar || m.editor.colorPicker) {
 		return m.editorView()
 	}
 	if m.help {
@@ -1293,6 +1358,20 @@ func (m model) View() string {
 		body = overlayCentered(body, popup)
 	}
 	footer := m.footerView()
+	if m.toast != "" {
+		decoration := "✓"
+		if m.undoTask != nil && m.toastFrame < 12 {
+			decoration = []string{"✦", "✧", "★", "✨"}[m.toastFrame%4]
+		}
+		message := decoration + "  " + m.toast
+		hint := ""
+		if m.undoTask != nil {
+			hint = "u  undo · restore previous status"
+		}
+		toast := lipgloss.NewStyle().Foreground(lipgloss.Color("#22c55e")).Bold(true).Render(message) + "\n" + dim.Render(hint)
+		popup := panel.Copy().BorderForeground(lipgloss.Color("#22c55e")).Width(44).Align(lipgloss.Center).Render(toast)
+		body = overlayCentered(body, popup)
+	}
 	if m.err != "" {
 		footer = lipgloss.NewStyle().Foreground(lipgloss.Color("#f85149")).Render(m.err)
 	}
@@ -2010,6 +2089,9 @@ func (m model) editorView() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel.Width(64).Render(m.colorPickerView()))
 	}
 	height := 24
+	if e.kind == editTask {
+		height = m.height - 4
+	}
 	if e.kind == editTag {
 		height = 18
 	}
@@ -2051,7 +2133,10 @@ func (m model) editorContent(width, height int) string {
 		if i == e.focus {
 			label = lipgloss.NewStyle().Foreground(blue).Bold(true).Underline(true).Render(names[i])
 		}
-		b.WriteString("\n" + label + "\n" + field + "\n")
+		if e.kind != editTask || !e.create {
+			b.WriteByte('\n')
+		}
+		b.WriteString(label + "\n" + field + "\n")
 		if e.kind == editTask && e.choice != 0 && i == e.focus {
 			b.WriteString(m.taskChoiceView(width) + "\n")
 		}
@@ -2213,7 +2298,7 @@ func (m model) miniCalendarView() string {
 	return b.String()
 }
 func (m model) helpView() string {
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel.Width(60).Render(titleStyle.Render("Keyboard")+"\n\n↑/↓ or j/k  move\n←/→ or tab  switch sidebar/content\ncalendar arrows  select day/task\ncalendar enter   browse day's tasks\n[/]              previous/next calendar period\nenter            open sidebar item\nn                new task\nN                new project\nT                new tag\ne/d              edit/delete\nspace            toggle task completion\nh                active/completed tasks\nv                calendar view\nr                refresh\n?                close help\nq                quit"))
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel.Width(60).Render(titleStyle.Render("Keyboard")+"\n\n↑/↓ or j/k  move\n←/→ or tab  switch sidebar/content\ncalendar arrows  select day/task\ncalendar enter   browse day's tasks\n[/]              previous/next calendar period\nenter            open sidebar item\nn                new task\nN                new project\nT                new tag\ne/d              edit/delete\nspace            toggle task completion\nu                undo last completion (6s)\nh                active/completed tasks\nv                calendar view\nr                refresh\n?                close help\nq                quit"))
 }
 
 func sameDay(a, b time.Time) bool {

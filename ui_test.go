@@ -2,7 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -840,15 +843,29 @@ func TestHorizontalArrowsSwitchMainFocus(t *testing.T) {
 	}
 }
 
-func TestTaskEditorRendersInRightSidebar(t *testing.T) {
+func TestNewTaskRendersInPopup(t *testing.T) {
 	m := model{page: pageToday, width: 160, height: 40, tasks: []task{{Name: "Existing task"}}}
 	m.openNew()
 	view := m.View()
-	if !strings.Contains(view, "Today") || !strings.Contains(view, "New task") {
-		t.Fatalf("task editor did not render beside the main view: %q", view)
+	if view != m.editorView() || !strings.Contains(view, "New task") || strings.Contains(view, "Today") {
+		t.Fatalf("new task did not render in the centered popup: %q", view)
 	}
 	if got := lipgloss.Width(view); got > m.width {
 		t.Fatalf("view width = %d, terminal = %d", got, m.width)
+	}
+}
+
+func TestNewTaskPrefillsSelectedProject(t *testing.T) {
+	for _, uid := range []string{"work", "", "missing"} {
+		m := model{selectedProjectUID: uid, projects: []project{{ID: 7, UID: "work", Name: "Work"}, {ID: 8, UID: "other", Name: "Other"}}, focusSide: true, side: sideFirstProject + 1}
+		m.openNew()
+		want := ""
+		if uid == "work" {
+			want = "Work"
+		}
+		if got := m.editor.fields[4].Value(); got != want {
+			t.Fatalf("selected project %q: got %q, want %q", uid, got, want)
+		}
 	}
 }
 
@@ -924,5 +941,77 @@ func TestSidebarTagPrefixKeepsColor(t *testing.T) {
 		if !strings.Contains(view, lipgloss.NewStyle().Foreground(lipgloss.Color("#ff00ff")).Render("  #work")) || strings.Contains(ansi.Strip(view), "● work") {
 			t.Fatalf("tag prefix/color missing: %q", view)
 		}
+	}
+}
+
+func TestCompletionToastAndUndo(t *testing.T) {
+	var statuses []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/task/task-1" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		statuses = append(statuses, body["status"])
+		w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	original := task{UID: "task-1", Name: "Test", Status: "waiting"}
+	m := model{api: newClient(config{BaseURL: server.URL}), page: pageAll, width: 100, height: 25, tasks: []task{original}}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(model)
+	if m.undoTask != nil {
+		t.Fatal("toast must wait for API success")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(model)
+	if m.undoTask == nil || m.toast != "Well done 🎉" {
+		t.Fatal("successful completion must show celebration")
+	}
+	generation := m.toastGeneration
+	updated, _ = m.Update(celebrationTickMsg{generation})
+	m = updated.(model)
+	if m.toastFrame != 1 {
+		t.Fatal("animation did not advance")
+	}
+	updated, _ = m.Update(loadedMsg{tasks: []task{}})
+	m = updated.(model)
+	if !strings.Contains(m.View(), "u  undo") || !strings.Contains(m.View(), "Well done 🎉") {
+		t.Fatal("undo hint missing after refresh")
+	}
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	m = updated.(model)
+	updated, _ = m.Update(cmd())
+	m = updated.(model)
+	if len(statuses) != 2 || statuses[0] != "done" || statuses[1] != "waiting" || m.undoTask != nil {
+		t.Fatalf("undo did not restore original status: %v", statuses)
+	}
+	updated, _ = m.Update(celebrationTickMsg{generation})
+	if updated.(model).toastFrame != 0 {
+		t.Fatal("stale timer changed newer toast")
+	}
+}
+
+func TestCompletionToastFailureAndExpiry(t *testing.T) {
+	original := task{UID: "task-1", Status: "in_progress"}
+	m := model{loading: true}
+	updated, _ := m.Update(taskToggleMsg{task: original, err: errors.New("offline")})
+	m = updated.(model)
+	if m.toast != "" || m.undoTask != nil || m.loading || m.err != "offline" {
+		t.Fatal("failure must not celebrate")
+	}
+	updated, _ = m.Update(taskToggleMsg{task: original})
+	m = updated.(model)
+	m.toastFrame = 59
+	updated, cmd := m.Update(celebrationTickMsg{m.toastGeneration})
+	m = updated.(model)
+	if m.toast != "" || m.undoTask != nil || cmd != nil {
+		t.Fatal("toast and undo must expire together")
+	}
+	updated, _ = m.Update(taskToggleMsg{task: task{Status: "done"}})
+	if updated.(model).undoTask != nil || updated.(model).toast != "Task reopened" {
+		t.Fatal("reopening must not celebrate completion")
 	}
 }
